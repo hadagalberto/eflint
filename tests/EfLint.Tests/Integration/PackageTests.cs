@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -8,35 +9,19 @@ using Xunit;
 
 namespace EfLint.Tests.Integration;
 
+[Collection(PackedPackageCollection.Name)]
 public class PackageTests
 {
     [Fact]
     public async Task Pack_ProducesAnalyzerPackageWithExpectedLayout()
     {
         var repositoryRoot = DotNetRunner.FindRepositoryRoot();
-
-        // Use a fresh workspace outside the repository so the test never leaves temporary
-        // packages or consumer projects behind in the working tree.
-        var workspace = Path.Combine(Path.GetTempPath(), "eflint-package-tests-" + Guid.NewGuid().ToString("N"));
-        var outputDirectory = Path.Combine(workspace, "packages");
-        Directory.CreateDirectory(outputDirectory);
-
+        var workspace = PackedPackageHarness.CreateWorkspace("eflint-package-tests");
         try
         {
-            var (exitCode, output) = await DotNetRunner.RunAsync(
-                repositoryRoot,
-                "pack",
-                "src/EfLint.Package/EfLint.Package.csproj",
-                "-c",
-                "Release",
-                "-o",
-                outputDirectory,
-                "--nologo",
-                "-v:m");
+            var packageDirectory = await PackedPackageHarness.PackAsync(workspace, repositoryRoot);
+            var packagePath = Directory.GetFiles(packageDirectory, "*.nupkg").Single();
 
-            Assert.True(exitCode == 0, $"dotnet pack failed:\n{output}");
-
-            var packagePath = Directory.GetFiles(outputDirectory, "*.nupkg").Single();
             using (var archive = ZipFile.OpenRead(packagePath))
             {
                 var entries = archive.Entries.Select(entry => entry.FullName).ToHashSet(StringComparer.Ordinal);
@@ -48,7 +33,20 @@ public class PackageTests
                 Assert.Contains("EfLint.nuspec", entries);
             }
 
-            await AssertPackageCanBeConsumedAsync(workspace, outputDirectory);
+            var shippedAnalyzer = Path.Combine(repositoryRoot, "src", "EfLint", "bin", "Release", "netstandard2.0", "EfLint.dll");
+            using (var archive = ZipFile.OpenRead(packagePath))
+            {
+                var entry = archive.GetEntry("analyzers/dotnet/cs/EfLint.dll");
+                Assert.NotNull(entry);
+                using var stream = entry!.Open();
+                using var memory = new MemoryStream();
+                await stream.CopyToAsync(memory);
+                Assert.True(
+                    memory.ToArray().SequenceEqual(File.ReadAllBytes(shippedAnalyzer)),
+                    "The packed analyzer DLL is stale: rebuild before packing.");
+            }
+
+            await AssertPackageCanBeConsumedAsync(workspace, packagePath);
         }
         finally
         {
@@ -59,71 +57,36 @@ public class PackageTests
         }
     }
 
-    private static async Task AssertPackageCanBeConsumedAsync(string workspace, string packageDirectory)
+    private static async Task AssertPackageCanBeConsumedAsync(string workspace, string packagePath)
     {
-        var consumerDirectory = Path.Combine(workspace, "consumer");
-        Directory.CreateDirectory(consumerDirectory);
-
-        await File.WriteAllTextAsync(
-            Path.Combine(consumerDirectory, "NuGet.config"),
-            $"""
-            <?xml version="1.0" encoding="utf-8"?>
-            <configuration>
-              <packageSources>
-                <clear />
-                <add key="eflint-local" value="{packageDirectory}" />
-                <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
-              </packageSources>
-            </configuration>
-            """);
-
-        await File.WriteAllTextAsync(
-            Path.Combine(consumerDirectory, "Consumer.csproj"),
-            """
-            <Project Sdk="Microsoft.NET.Sdk">
-              <PropertyGroup>
-                <TargetFramework>net8.0</TargetFramework>
-                <Nullable>enable</Nullable>
-                <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
-                <MSBuildTreatWarningsAsErrors>false</MSBuildTreatWarningsAsErrors>
-                <WarningsNotAsErrors>$(WarningsNotAsErrors);EFL3001;EF1002</WarningsNotAsErrors>
-              </PropertyGroup>
-              <ItemGroup>
-                <PackageReference Include="EfLint" Version="0.1.0" />
-                <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="8.0.11" />
-              </ItemGroup>
-            </Project>
-            """);
-
-        await File.WriteAllTextAsync(
-            Path.Combine(consumerDirectory, "Sample.cs"),
-            """
-            using Microsoft.EntityFrameworkCore;
-
-            public class Post { public int Id { get; set; } }
-
-            public class BlogContext : DbContext
+        var output = await PackedPackageHarness.CompileWithPackedAnalyzerAsync(
+            workspace,
+            "consumer",
+            packagePath,
+            new Dictionary<string, string>
             {
-                public DbSet<Post> Posts => Set<Post>();
-            }
+                ["Sample.cs"] = """
+                    using Microsoft.EntityFrameworkCore;
 
-            public static class Sample
-            {
-                public static void Query(BlogContext db, string search)
-                {
-                    db.Posts.FromSqlRaw($"SELECT * FROM Posts WHERE Name = {search}");
-                }
-            }
-            """);
+                    public class Post { public int Id { get; set; } }
 
-        var (exitCode, output) = await DotNetRunner.RunAsync(
-            consumerDirectory,
-            "build",
-            "Consumer.csproj",
-            "--nologo",
-            "-v:m");
+                    public class BlogContext : DbContext
+                    {
+                        public DbSet<Post> Posts => Set<Post>();
+                    }
 
-        Assert.True(exitCode == 0, $"Consumer build failed:\n{output}");
+                    public static class Sample
+                    {
+                        public static void Main() { }
+
+                        public static void Query(BlogContext db, string search)
+                        {
+                            db.Posts.FromSqlRaw($"SELECT * FROM Posts WHERE Name = {search}");
+                        }
+                    }
+                    """,
+            });
+
         Assert.Contains("EFL3001", output);
     }
 }

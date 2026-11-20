@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
 
 namespace EfLint.Infrastructure;
@@ -40,6 +41,15 @@ internal static class QueryChain
     /// <summary>True when the operation is a query rooted in a DbContext/DbSet.</summary>
     public static bool IsEfQuery(IOperation operation, EfSymbols symbols)
     {
+        return IsEfQuery(operation, symbols, operation.SemanticModel, NewVisitedMethods());
+    }
+
+    private static bool IsEfQuery(
+        IOperation operation,
+        EfSymbols symbols,
+        SemanticModel? model,
+        HashSet<IMethodSymbol> visitedMethods)
+    {
         var current = RawSqlHelpers.Unwrap(operation);
         if (!symbols.HasEntityFrameworkCore || !symbols.IsQueryableType(current.Type))
         {
@@ -53,9 +63,23 @@ internal static class QueryChain
                 return true;
             }
 
+            if (TryGetLocalValue(current, out var localValue))
+            {
+                current = RawSqlHelpers.Unwrap(localValue!);
+                continue;
+            }
+
             switch (current)
             {
                 case IInvocationOperation invocation:
+                    if (TryGetFactoryReturnValues(invocation, symbols, model, visitedMethods, out var returns, out _))
+                    {
+                        // A source-declared factory is an EF query only when every returned
+                        // expression is itself proven to originate from a DbContext.
+                        return returns.Count > 0 && returns.All(value =>
+                            IsEfQuery(value, symbols, value.SemanticModel ?? model, visitedMethods));
+                    }
+
                     var target = invocation.TargetMethod;
                     if (!IsQueryOperator(target, symbols) && !ReturnsQuery(target, symbols))
                     {
@@ -87,8 +111,8 @@ internal static class QueryChain
                     continue;
 
                 case IConditionalOperation conditional:
-                    return (conditional.WhenTrue is not null && IsEfQuery(conditional.WhenTrue, symbols))
-                        || (conditional.WhenFalse is not null && IsEfQuery(conditional.WhenFalse, symbols));
+                    return (conditional.WhenTrue is not null && IsEfQuery(conditional.WhenTrue, symbols, model, visitedMethods))
+                        || (conditional.WhenFalse is not null && IsEfQuery(conditional.WhenFalse, symbols, model, visitedMethods));
 
                 default:
                     return false;
@@ -156,6 +180,16 @@ internal static class QueryChain
     /// </summary>
     public static IOperation? FindContextRoot(IOperation operation, EfSymbols symbols)
     {
+        return FindContextRoot(operation, symbols, operation.SemanticModel, NewVisitedMethods(), null);
+    }
+
+    private static IOperation? FindContextRoot(
+        IOperation operation,
+        EfSymbols symbols,
+        SemanticModel? model,
+        HashSet<IMethodSymbol> visitedMethods,
+        IReadOnlyDictionary<IParameterSymbol, IOperation>? substitutions)
+    {
         var current = RawSqlHelpers.Unwrap(operation);
         if (!symbols.HasEntityFrameworkCore || !symbols.IsQueryableType(current.Type))
         {
@@ -168,19 +202,47 @@ internal static class QueryChain
                 && symbols.IsDbContextType(member.Instance?.Type)
                 && (symbols.IsDbSetType(member.Type) || symbols.IsQueryableType(member.Type)))
             {
-                return RawSqlHelpers.Unwrap(member.Instance!);
+                return ApplySubstitutions(RawSqlHelpers.Unwrap(member.Instance!), substitutions);
             }
 
             if (current is IInvocationOperation invocation
                 && invocation.TargetMethod.Name == "Set"
                 && symbols.IsDbContextType(invocation.Instance?.Type))
             {
-                return RawSqlHelpers.Unwrap(invocation.Instance!);
+                return ApplySubstitutions(RawSqlHelpers.Unwrap(invocation.Instance!), substitutions);
+            }
+
+            if (TryGetLocalValue(current, out var localValue))
+            {
+                current = RawSqlHelpers.Unwrap(localValue!);
+                continue;
+            }
+
+            if (current is IParameterReferenceOperation parameterReference
+                && substitutions is not null
+                && substitutions.TryGetValue(parameterReference.Parameter, out var substituted))
+            {
+                current = RawSqlHelpers.Unwrap(substituted);
+                continue;
             }
 
             switch (current)
             {
                 case IInvocationOperation currentInvocation:
+                    if (TryGetFactoryReturnValues(currentInvocation, symbols, model, visitedMethods, out var returns, out var factorySubstitutions))
+                    {
+                        foreach (var returned in returns)
+                        {
+                            var root = FindContextRoot(returned, symbols, returned.SemanticModel ?? model, visitedMethods, factorySubstitutions);
+                            if (root is not null)
+                            {
+                                return root;
+                            }
+                        }
+
+                        return null;
+                    }
+
                     if (currentInvocation.Instance is not null)
                     {
                         current = RawSqlHelpers.Unwrap(currentInvocation.Instance);
@@ -206,9 +268,18 @@ internal static class QueryChain
                     continue;
 
                 case IConditionalOperation conditional:
-                    return conditional.WhenTrue is not null
-                        ? FindContextRoot(conditional.WhenTrue, symbols)
-                        : FindContextRoot(conditional.WhenFalse!, symbols);
+                    if (conditional.WhenTrue is not null)
+                    {
+                        var root = FindContextRoot(conditional.WhenTrue, symbols, model, visitedMethods, substitutions);
+                        if (root is not null)
+                        {
+                            return root;
+                        }
+                    }
+
+                    return conditional.WhenFalse is null
+                        ? null
+                        : FindContextRoot(conditional.WhenFalse, symbols, model, visitedMethods, substitutions);
 
                 default:
                     return null;
@@ -229,6 +300,133 @@ internal static class QueryChain
     {
         return argument is not null && RawSqlHelpers.Unwrap(argument.Value) is IAnonymousFunctionOperation;
     }
+
+    private static IOperation ApplySubstitutions(
+        IOperation operation,
+        IReadOnlyDictionary<IParameterSymbol, IOperation>? substitutions)
+    {
+        var current = operation;
+        for (var depth = 0; depth < MaxChainDepth; depth++)
+        {
+            if (current is not IParameterReferenceOperation parameter
+                || substitutions is null
+                || !substitutions.TryGetValue(parameter.Parameter, out var replacement))
+            {
+                break;
+            }
+
+            current = RawSqlHelpers.Unwrap(replacement);
+        }
+
+        return current;
+    }
+
+    private static bool TryGetLocalValue(IOperation current, out IOperation? value)
+    {
+        value = null;
+        if (current is not ILocalReferenceOperation local)
+        {
+            return false;
+        }
+
+        var function = EfOperationHelpers.FindEnclosingFunction(local);
+        if (function is null)
+        {
+            return false;
+        }
+
+        value = EfOperationHelpers.FindLastValueForSymbol(function, local.Local, local.Syntax.SpanStart);
+        return value is not null;
+    }
+
+    /// <summary>
+    /// Recognizes a source-declared method/property whose body returns an IQueryable.
+    /// Such a factory is only treated as an EF query when every returned expression
+    /// can itself be proven to originate from a DbContext.
+    /// </summary>
+    private static bool TryGetFactoryReturnValues(
+        IInvocationOperation invocation,
+        EfSymbols symbols,
+        SemanticModel? model,
+        HashSet<IMethodSymbol> visitedMethods,
+        out IReadOnlyList<IOperation> returns,
+        out IReadOnlyDictionary<IParameterSymbol, IOperation> substitutions)
+    {
+        returns = System.Array.Empty<IOperation>();
+        substitutions = new Dictionary<IParameterSymbol, IOperation>(SymbolEqualityComparer.Default);
+        var method = invocation.TargetMethod.OriginalDefinition;
+        if (!ReturnsQuery(method, symbols)
+            || method.DeclaringSyntaxReferences.IsDefaultOrEmpty
+            || !visitedMethods.Add(method))
+        {
+            return false;
+        }
+
+        var syntaxReference = method.DeclaringSyntaxReferences[0];
+        var modelForDeclaration = GetModelForSyntaxTree(syntaxReference.SyntaxTree, model, invocation.SemanticModel);
+        if (modelForDeclaration is null)
+        {
+            return false;
+        }
+
+        var declaration = syntaxReference.GetSyntax();
+        var values = new List<IOperation>();
+        foreach (var syntax in declaration.DescendantNodes())
+        {
+            SyntaxNode? expression = syntax switch
+            {
+                ReturnStatementSyntax { Expression: not null } statement => statement.Expression,
+                ArrowExpressionClauseSyntax arrow => arrow.Expression,
+                _ => null,
+            };
+
+            if (expression is null)
+            {
+                continue;
+            }
+
+            var returned = modelForDeclaration.GetOperation(expression);
+            if (returned is not null)
+            {
+                values.Add(returned);
+            }
+        }
+
+        if (values.Count == 0)
+        {
+            return false;
+        }
+
+        returns = values;
+        var mapped = new Dictionary<IParameterSymbol, IOperation>(SymbolEqualityComparer.Default);
+        foreach (var argument in invocation.Arguments)
+        {
+            if (argument.Parameter is not null)
+            {
+                mapped[argument.Parameter] = argument.Value;
+            }
+        }
+
+        substitutions = mapped;
+        return true;
+    }
+
+    private static SemanticModel? GetModelForSyntaxTree(SyntaxTree tree, SemanticModel? model, SemanticModel? fallback)
+    {
+        if (model is not null)
+        {
+            return ReferenceEquals(model.SyntaxTree, tree)
+                ? model
+                : model.Compilation.GetSemanticModel(tree);
+        }
+
+        return fallback is not null
+            ? (ReferenceEquals(fallback.SyntaxTree, tree) ? fallback : fallback.Compilation.GetSemanticModel(tree))
+            : null;
+    }
+
+    private static HashSet<IMethodSymbol> NewVisitedMethods() =>
+        new(SymbolEqualityComparer.Default);
 
     private static bool IsQueryRoot(IOperation operation, EfSymbols symbols)
     {

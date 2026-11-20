@@ -4,8 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Maintainer fix pass: query rules now fire in a real consumer built from the packed
+  nupkg. The query-chain tracer follows `IEnumerable`/`Enumerable` extensions invoked
+  on `DbSet<T>` (which binds to `Enumerable.ToList`/`Count`, not `Queryable`), DbSet
+  auto-properties, expression-bodied properties and fields, top-level statements,
+  `IQueryable<T>` locals and source-declared factories returning `IQueryable<T>`
+  (including parameter substitution so the originating `DbContext` is still identified).
+- Packed-package tests consume the freshly built nupkg instead of a stale global NuGet
+  cache entry, and compile with the packed analyzer DLLs passed directly to csc.
+
 ### Added
 
+- Integration test that compiles the exact maintainer reproduction against the packed
+  nupkg and asserts its exact diagnostic set, plus top-level-statement and DbSet-shape
+  variants and receiver-shape coverage for all query-derived rules.
 - Solution scaffold: analyzers, code fixes, NuGet package, tests, sample, CI and docs.
 - Shared infrastructure: EF Core symbol cache via `RegisterCompilationStartAction`,
   `IOperation` query-chain helpers and `.editorconfig` option reader.
