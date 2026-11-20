@@ -6,3 +6,4 @@ TestResults/
 *.nupkg
 artifacts/
 .probe/
+opencode.json
