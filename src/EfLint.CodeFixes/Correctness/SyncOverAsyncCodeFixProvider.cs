@@ -76,12 +76,18 @@ public sealed class SyncOverAsyncCodeFixProvider : CodeFixProvider
             && find == "true";
 
         diagnostic.Properties.TryGetValue(SyncOverAsyncAnalyzer.EntityTypeProperty, out var entityType);
-        var newName = isFind && entityType is { Length: > 0 }
+        var isGenericFind = isFind && entityType is { Length: > 0 };
+        var newName = isGenericFind
             ? asyncName + "<" + entityType + ">"
             : asyncName;
 
+        // DbSet<T>.FindAsync takes a params key array, so its original arguments can be
+        // passed verbatim. DbContext.FindAsync<TEntity> needs an explicit object[] when
+        // a CancellationToken is added (params must be the last parameter).
+        var wrapKeyValues = isFind && (isGenericFind || token is { Length: > 0 });
+
         var renamed = invocation.WithExpression(Rename(invocation.Expression, newName))
-            .WithArgumentList(BuildArguments(invocation, token, isFind));
+            .WithArgumentList(BuildArguments(invocation, token, wrapKeyValues));
 
         var leading = invocation.GetLeadingTrivia();
         var trailing = invocation.GetTrailingTrivia();
@@ -118,12 +124,15 @@ public sealed class SyncOverAsyncCodeFixProvider : CodeFixProvider
         };
     }
 
-    private static ArgumentListSyntax BuildArguments(InvocationExpressionSyntax invocation, string? token, bool isFind)
+    private static ArgumentListSyntax BuildArguments(
+        InvocationExpressionSyntax invocation,
+        string? token,
+        bool wrapKeyValues)
     {
         var original = invocation.ArgumentList.Arguments;
         var arguments = new List<ArgumentSyntax>();
 
-        if (isFind)
+        if (wrapKeyValues)
         {
             var values = SyntaxFactory.SeparatedList(
                 original.Select(argument => argument.Expression.WithoutTrivia()));

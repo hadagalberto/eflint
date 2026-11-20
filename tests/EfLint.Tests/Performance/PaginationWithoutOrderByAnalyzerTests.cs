@@ -161,6 +161,41 @@ public class PaginationWithoutOrderByAnalyzerTests
             """);
     }
 
+    // Hand-derived: q is initialized with OrderBy(b => b.Id) before pagination, so
+    // the Skip/Take chain is deterministic. EFL1006 must not fire on either call.
+    [Fact]
+    public async Task OrderByInLocalThenSkipAndTake_NoDiagnostic()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var q = db.Blogs.OrderBy(b => b.Id);
+                    var page = q.Skip(1).Take(2).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: q aliases `ordered`, which was initialized with OrderBy. The
+    // OrderBy is two local hops away from Skip, so the walk must follow both hops.
+    [Fact]
+    public async Task OrderByInAliasedLocalThenSkip_NoDiagnostic()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var ordered = db.Blogs.OrderBy(b => b.Id);
+                    IQueryable<Blog> q = ordered;
+                    var page = q.Skip(1).ToList();
+                }
+            }
+            """);
+    }
+
     [Fact]
     public async Task InMemorySkip_NoDiagnostic()
     {

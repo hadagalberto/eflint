@@ -27,6 +27,19 @@ public sealed class MissingAsNoTrackingAnalyzer : DiagnosticAnalyzer
         "Attach",
     };
 
+    /// <summary>
+    /// Materializers whose result is a scalar or an aggregate. No entity is handed to the
+    /// caller, so AsNoTracking() would either be inapplicable (CS0452) or pointless.
+    /// </summary>
+    private static readonly HashSet<string> ScalarMaterializers = new()
+    {
+        "Count", "CountAsync", "LongCount", "LongCountAsync",
+        "Any", "AnyAsync", "All", "AllAsync",
+        "Sum", "SumAsync", "Min", "MinAsync", "Max", "MaxAsync",
+        "Average", "AverageAsync", "Aggregate", "Contains",
+        "ExecuteDelete", "ExecuteDeleteAsync", "ExecuteUpdate", "ExecuteUpdateAsync",
+    };
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(EfLintDiagnostics.MissingAsNoTracking);
 
@@ -52,13 +65,28 @@ public sealed class MissingAsNoTrackingAnalyzer : DiagnosticAnalyzer
     private static void AnalyzeInvocation(OperationAnalysisContext context, EfSymbols symbols)
     {
         var invocation = (IInvocationOperation)context.Operation;
-        if (!QueryChain.IsMaterializer(invocation.TargetMethod, symbols))
+        if (!QueryChain.IsMaterializer(invocation.TargetMethod, symbols)
+            || IsScalarMaterializer(invocation.TargetMethod))
+        {
+            return;
+        }
+
+        // A materializer inside a lambda is a subquery, not a standalone read-only query.
+        if (IsInsideLambda(invocation))
         {
             return;
         }
 
         var source = invocation.Instance ?? invocation.Arguments.FirstOrDefault()?.Value;
         if (source is null || !QueryChain.IsEfQuery(source, symbols))
+        {
+            return;
+        }
+
+        // The whole point of AsNoTracking is to avoid tracking materialized entities. If the
+        // query element is a scalar, an anonymous type or any type we cannot prove is a mapped
+        // entity, adding AsNoTracking() changes nothing or does not compile. Stay silent.
+        if (!MaterializesEntity(source, invocation.Type, symbols))
         {
             return;
         }
@@ -84,6 +112,277 @@ public sealed class MissingAsNoTrackingAnalyzer : DiagnosticAnalyzer
         context.ReportDiagnostic(Diagnostic.Create(
             EfLintDiagnostics.MissingAsNoTracking,
             GetNameLocation(invocation)));
+    }
+
+    private static bool IsScalarMaterializer(IMethodSymbol method) =>
+        ScalarMaterializers.Contains(method.Name);
+
+    private static bool IsInsideLambda(IOperation operation)
+    {
+        for (var parent = operation.Parent; parent is not null; parent = parent.Parent)
+        {
+            if (parent is IAnonymousFunctionOperation or ILocalFunctionOperation)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True only when the materialized element is a class we can prove is a mapped entity:
+    /// either the type of a DbSet/Set&lt;T&gt; root or a navigation of that root entity.
+    /// </summary>
+    private static bool MaterializesEntity(IOperation source, ITypeSymbol? resultType, EfSymbols symbols)
+    {
+        if (resultType is null || resultType.IsValueType || resultType.SpecialType == SpecialType.System_String)
+        {
+            return false;
+        }
+
+        var elementType = GetQueryElementType(source);
+        if (elementType is null || !IsMappedEntityCandidate(elementType))
+        {
+            return false;
+        }
+
+        var rootEntityType = FindRootEntityType(source, symbols);
+        if (rootEntityType is null)
+        {
+            return false;
+        }
+
+        return SymbolEqualityComparer.Default.Equals(elementType, rootEntityType)
+            || IsNavigationOf(rootEntityType, elementType);
+    }
+
+    private static ITypeSymbol? GetQueryElementType(IOperation source)
+    {
+        var type = RawSqlHelpers.Unwrap(source).Type;
+        if (type is null)
+        {
+            return null;
+        }
+
+        if (TryGetQueryElement(type, out var element))
+        {
+            return element;
+        }
+
+        foreach (var iface in type.AllInterfaces)
+        {
+            if (TryGetQueryElement(iface, out element))
+            {
+                return element;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryGetQueryElement(ITypeSymbol type, out ITypeSymbol? element)
+    {
+        element = null;
+        if (type is not INamedTypeSymbol named || !named.IsGenericType || named.TypeArguments.Length != 1)
+        {
+            return false;
+        }
+
+        var ns = named.ContainingNamespace?.ToDisplayString();
+        var definition = named.OriginalDefinition.Name;
+        var isQueryElement = definition switch
+        {
+            "IQueryable" or "IOrderedQueryable" => ns == "System.Linq",
+            "IEnumerable" or "ICollection" or "IList" or "IReadOnlyCollection" or "IReadOnlyList"
+                => ns == "System.Collections.Generic",
+            "DbSet" => ns == "Microsoft.EntityFrameworkCore",
+            _ => false,
+        };
+
+        if (!isQueryElement)
+        {
+            return false;
+        }
+
+        element = named.TypeArguments[0];
+        return true;
+    }
+
+    private static bool IsMappedEntityCandidate(ITypeSymbol? type)
+    {
+        return type is INamedTypeSymbol named
+            && named.TypeKind == TypeKind.Class
+            && !named.IsAnonymousType
+            && named.SpecialType == SpecialType.None;
+    }
+
+    /// <summary>Walks a query chain down to the DbSet/Set&lt;T&gt; that roots it.</summary>
+    private static INamedTypeSymbol? FindRootEntityType(IOperation operation, EfSymbols symbols)
+    {
+        IOperation? current = RawSqlHelpers.Unwrap(operation);
+        for (var depth = 0; depth < MaxChainDepth && current is not null; depth++)
+        {
+            if (symbols.IsDbSetType(current.Type)
+                && current.Type is INamedTypeSymbol setType
+                && setType.TypeArguments.Length == 1)
+            {
+                return setType.TypeArguments[0] as INamedTypeSymbol;
+            }
+
+            if (current is IInvocationOperation setCall
+                && setCall.TargetMethod.Name == "Set"
+                && (symbols.IsDbContextType(setCall.Instance?.Type)
+                    || symbols.IsDbContextType(setCall.TargetMethod.ContainingType?.OriginalDefinition))
+                && setCall.TargetMethod.TypeArguments.Length == 1)
+            {
+                return setCall.TargetMethod.TypeArguments[0] as INamedTypeSymbol;
+            }
+
+            if (current is ILocalReferenceOperation local)
+            {
+                var function = EfOperationHelpers.FindEnclosingFunction(local);
+                var value = function is null
+                    ? null
+                    : EfOperationHelpers.FindLastValueForSymbol(function, local.Local, local.Syntax.SpanStart);
+                if (value is null)
+                {
+                    return null;
+                }
+
+                current = RawSqlHelpers.Unwrap(value);
+                continue;
+            }
+
+            // A source-declared factory returning IQueryable<T> is an EF query only when its
+            // own return expression roots in a DbSet/Set<T>; inspect it the same way.
+            if (current is IInvocationOperation factoryCall
+                && factoryCall.TargetMethod.DeclaringSyntaxReferences.Length > 0
+                && (symbols.IsQueryableType(factoryCall.TargetMethod.ReturnType)
+                    || symbols.IsDbSetType(factoryCall.TargetMethod.ReturnType)))
+            {
+                var syntaxReference = factoryCall.TargetMethod.DeclaringSyntaxReferences[0];
+                var declarationModel = factoryCall.SemanticModel;
+                if (declarationModel is null || declarationModel.SyntaxTree != syntaxReference.SyntaxTree)
+                {
+                    return null;
+                }
+
+                var declaration = syntaxReference.GetSyntax();
+                foreach (var syntax in declaration.DescendantNodes())
+                {
+                    SyntaxNode? expression = syntax switch
+                    {
+                        ReturnStatementSyntax { Expression: not null } statement => statement.Expression,
+                        ArrowExpressionClauseSyntax arrow => arrow.Expression,
+                        _ => null,
+                    };
+
+                    if (expression is null)
+                    {
+                        continue;
+                    }
+
+                    var returned = declarationModel.GetOperation(expression);
+                    if (returned is null)
+                    {
+                        continue;
+                    }
+
+                    var returnedRoot = FindRootEntityType(returned, symbols);
+                    if (returnedRoot is not null)
+                    {
+                        return returnedRoot;
+                    }
+                }
+
+                return null;
+            }
+
+            switch (current)
+            {
+                case IInvocationOperation invocation when invocation.Instance is not null:
+                    current = RawSqlHelpers.Unwrap(invocation.Instance);
+                    continue;
+
+                case IInvocationOperation invocation:
+                    var queryableArgument = invocation.Arguments.FirstOrDefault(argument =>
+                        symbols.IsQueryableType(argument.Parameter?.Type)
+                        || symbols.IsQueryableType(argument.Value.Type)
+                        || symbols.IsDbSetType(argument.Value.Type));
+                    if (queryableArgument is null)
+                    {
+                        return null;
+                    }
+
+                    current = RawSqlHelpers.Unwrap(queryableArgument.Value);
+                    continue;
+
+                case IMemberReferenceOperation member when member.Instance is not null:
+                    current = RawSqlHelpers.Unwrap(member.Instance);
+                    continue;
+
+                default:
+                    return null;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsNavigationOf(INamedTypeSymbol entityType, ITypeSymbol candidate)
+    {
+        for (var type = entityType; type is not null; type = type.BaseType)
+        {
+            foreach (var member in type.GetMembers())
+            {
+                ITypeSymbol? memberType = member switch
+                {
+                    IPropertySymbol property when !property.IsStatic => property.Type,
+                    IFieldSymbol field when !field.IsStatic => field.Type,
+                    _ => null,
+                };
+
+                if (memberType is null)
+                {
+                    continue;
+                }
+
+                if (SymbolEqualityComparer.Default.Equals(memberType, candidate))
+                {
+                    return true;
+                }
+
+                if (memberType is INamedTypeSymbol named)
+                {
+                    foreach (var argument in named.TypeArguments)
+                    {
+                        if (SymbolEqualityComparer.Default.Equals(argument, candidate))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                foreach (var iface in memberType.AllInterfaces)
+                {
+                    if (iface is not INamedTypeSymbol interfaceType)
+                    {
+                        continue;
+                    }
+
+                    foreach (var argument in interfaceType.TypeArguments)
+                    {
+                        if (SymbolEqualityComparer.Default.Equals(argument, candidate))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

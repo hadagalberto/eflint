@@ -78,7 +78,18 @@ public sealed class LargeContainsAnalyzer : DiagnosticAnalyzer
         }
 
         var count = GetElementCount(collection);
-        if (count is null || count.Value < ReportThreshold)
+
+        // A statically small collection cannot stress a provider's parameter limit. When the
+        // size is unknown, a parameter/field/local really is the unbounded in-memory case:
+        // the caller can pass any number of values. Unknown sizes must therefore be reported.
+        if (count is not null)
+        {
+            if (count.Value < ReportThreshold)
+            {
+                return;
+            }
+        }
+        else if (!HasUnknownSize(collection))
         {
             return;
         }
@@ -95,7 +106,7 @@ public sealed class LargeContainsAnalyzer : DiagnosticAnalyzer
         context.ReportDiagnostic(Diagnostic.Create(
             EfLintDiagnostics.LargeContains,
             location,
-            count.Value.ToString(CultureInfo.InvariantCulture)));
+            count?.ToString(CultureInfo.InvariantCulture) ?? "many"));
     }
 
     /// <summary>True when the invocation sits in a lambda passed to an EF query operator.</summary>
@@ -161,6 +172,18 @@ public sealed class LargeContainsAnalyzer : DiagnosticAnalyzer
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// True when the collection's size is not statically knowable at this call site. Entity
+    /// property/navigation accesses are deliberately excluded: they are translated as SQL
+    /// subqueries, not parameterized in-memory lists.
+    /// </summary>
+    private static bool HasUnknownSize(IOperation collection)
+    {
+        return RawSqlHelpers.Unwrap(collection) is IParameterReferenceOperation
+            or IFieldReferenceOperation
+            or ILocalReferenceOperation;
     }
 
     /// <summary>Number of literal values in an in-memory collection, or null when unknown.</summary>

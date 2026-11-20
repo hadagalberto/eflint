@@ -39,15 +39,55 @@ public class ClientEvaluationAnalyzerTests
             """);
     }
 
+    // Corrected per review finding EFL2003: EF Core evaluates the outermost final
+    // projection on the client (Select(...).ToList() translates the query first and
+    // projects afterwards), so a user method there is legal. The old assertion
+    // encoded the false positive and is now a false-positive guard.
     [Fact]
-    public async Task UserMethod_InSelectLambda_Reports()
+    public async Task UserMethod_InFinalSelectProjection_NoDiagnostic()
     {
         await EfLintTestResources.VerifyAnalyzerAsync<ClientEvaluationAnalyzer>("""
             public class Sample
             {
                 public void M(BlogContext db)
                 {
-                    var names = db.Blogs.Select(b => {|EFL2003:Describe|}(b)).ToList();
+                    var names = db.Blogs.Select(b => Describe(b)).ToList();
+                }
+
+                private static string Describe(Blog b) => b.Name;
+            }
+            """);
+    }
+
+    // Hand-derived: Select is followed by Where, so its result is still composed into
+    // SQL. Describe cannot be translated there -> one diagnostic on Describe.
+    [Fact]
+    public async Task UserMethod_InNonFinalSelect_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<ClientEvaluationAnalyzer>("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var names = db.Blogs.Select(b => {|EFL2003:Describe|}(b)).Where(name => name.Length > 0).ToList();
+                }
+
+                private static string Describe(Blog b) => b.Name;
+            }
+            """);
+    }
+
+    // Hand-derived: the projection is nested inside a Where lambda, so it is a
+    // subquery projection rather than the outermost final one -> report Describe.
+    [Fact]
+    public async Task UserMethod_InSubquerySelect_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<ClientEvaluationAnalyzer>("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.Where(b => db.Blogs.Select(x => {|EFL2003:Describe|}(x)).Any()).ToList();
                 }
 
                 private static string Describe(Blog b) => b.Name;

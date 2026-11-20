@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using EfLint.Infrastructure;
 using Microsoft.CodeAnalysis;
@@ -13,6 +14,17 @@ namespace EfLint.Analyzers;
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class CountComparisonAnalyzer : DiagnosticAnalyzer
 {
+    internal const string ReplacementMethodProperty = "ReplacementMethod";
+
+    private static readonly IReadOnlyDictionary<string, string> ReplacementNames =
+        new Dictionary<string, string>
+        {
+            ["Count"] = "Any",
+            ["CountAsync"] = "AnyAsync",
+            ["LongCount"] = "Any",
+            ["LongCountAsync"] = "AnyAsync",
+        };
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(EfLintDiagnostics.CountComparison);
 
@@ -38,7 +50,7 @@ public sealed class CountComparisonAnalyzer : DiagnosticAnalyzer
     private static void AnalyzeInvocation(OperationAnalysisContext context, EfSymbols symbols)
     {
         var invocation = (IInvocationOperation)context.Operation;
-        if (invocation.TargetMethod.Name != "Count"
+        if (!ReplacementNames.TryGetValue(invocation.TargetMethod.Name, out var replacementName)
             || !QueryChain.IsMaterializer(invocation.TargetMethod, symbols)
             || !IsOnEfQuery(invocation, symbols)
             || !IsExistenceComparison(invocation))
@@ -52,9 +64,13 @@ public sealed class CountComparisonAnalyzer : DiagnosticAnalyzer
             return;
         }
 
+        var properties = ImmutableDictionary<string, string?>.Empty
+            .Add(ReplacementMethodProperty, replacementName);
+
         context.ReportDiagnostic(Diagnostic.Create(
             EfLintDiagnostics.CountComparison,
             GetNameLocation(invocation),
+            properties,
             invocation.TargetMethod.Name));
     }
 
@@ -85,7 +101,9 @@ public sealed class CountComparisonAnalyzer : DiagnosticAnalyzer
     private static bool IsExistenceComparison(IInvocationOperation invocation)
     {
         IOperation current = invocation;
-        while (current.Parent is IConversionOperation or IParenthesizedOperation)
+        // An awaited CountAsync is wrapped in IAwaitOperation; climb it so the
+        // existence comparison sees the same binary shape as the sync Count() case.
+        while (current.Parent is IConversionOperation or IParenthesizedOperation or IAwaitOperation)
         {
             current = current.Parent!;
         }

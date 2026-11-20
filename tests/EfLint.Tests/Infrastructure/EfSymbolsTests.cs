@@ -31,6 +31,18 @@ public class EfSymbolsTests
     }
 
     [Fact]
+    public async Task Create_IsCachedPerCompilation()
+    {
+        // Hand-derived: every analyzer resolving EF symbols for the same
+        // compilation must share one cache instance (one metadata lookup).
+        var compilation = await CreateCompilationAsync(EfLintTestResources.EfCore);
+        var first = EfSymbols.Create(compilation);
+        var second = EfSymbols.Create(compilation);
+
+        Assert.Same(first, second);
+    }
+
+    [Fact]
     public async Task WithoutEfCoreReference_NoOp()
     {
         var compilation = await CreateCompilationAsync(ReferenceAssemblies.Net.Net80);

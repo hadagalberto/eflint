@@ -33,6 +33,10 @@ public sealed class SaveChangesInLoopCodeFixProvider : CodeFixProvider
             return;
         }
 
+        var semanticModel = await context.Document
+            .GetSemanticModelAsync(context.CancellationToken)
+            .ConfigureAwait(false);
+
         foreach (var diagnostic in context.Diagnostics)
         {
             if (!diagnostic.Properties.TryGetValue(SaveChangesInLoopAnalyzer.FixableProperty, out var fixable)
@@ -49,6 +53,15 @@ public sealed class SaveChangesInLoopCodeFixProvider : CodeFixProvider
                 continue;
             }
 
+            // The analyzer only checks the statement shape. A receiver declared
+            // inside the loop would be out of scope for the moved statement
+            // (CS0103), so such a fix must never be offered.
+            if (semanticModel is null
+                || !ReceiverRemainsInScope(invocation, semanticModel, context.CancellationToken))
+            {
+                continue;
+            }
+
             context.RegisterCodeFix(
                 CodeAction.Create(
                     "Move SaveChanges after the loop",
@@ -56,6 +69,64 @@ public sealed class SaveChangesInLoopCodeFixProvider : CodeFixProvider
                     equivalenceKey: EquivalenceKey),
                 diagnostic);
         }
+    }
+
+    /// <summary>
+    /// Returns false when any identifier in the SaveChanges receiver resolves to
+    /// a local declared inside the loop we are moving the statement out of.
+    /// </summary>
+    private static bool ReceiverRemainsInScope(
+        InvocationExpressionSyntax invocation,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var loop = SaveChangesInLoopAnalyzer.FindEnclosingLoopStatement(invocation);
+        if (loop is null)
+        {
+            return false;
+        }
+
+        var receiver = GetReceiver(invocation.Expression);
+        if (receiver is null)
+        {
+            return false;
+        }
+
+        foreach (var identifier in receiver.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+        {
+            if (semanticModel.GetSymbolInfo(identifier, cancellationToken).Symbol is ILocalSymbol local
+                && IsDeclaredInsideLoop(local, loop, cancellationToken))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static ExpressionSyntax? GetReceiver(ExpressionSyntax expression) =>
+        expression switch
+        {
+            MemberAccessExpressionSyntax member => member.Expression,
+            MemberBindingExpressionSyntax binding when binding.Parent is ConditionalAccessExpressionSyntax conditional
+                => conditional.Expression,
+            _ => null,
+        };
+
+    private static bool IsDeclaredInsideLoop(
+        ILocalSymbol local,
+        StatementSyntax loop,
+        CancellationToken cancellationToken)
+    {
+        foreach (var reference in local.DeclaringSyntaxReferences)
+        {
+            if (loop.Span.Contains(reference.GetSyntax(cancellationToken).Span))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task<Document> FixAsync(

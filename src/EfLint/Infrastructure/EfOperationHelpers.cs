@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -6,6 +8,11 @@ namespace EfLint.Infrastructure;
 /// <summary>IOperation helpers shared by the correctness analyzers.</summary>
 internal static class EfOperationHelpers
 {
+    // Operations for one function body are reused within an analyzer pass. Index
+    // assignments once per body instead of rescanning every descendant for each
+    // local reference (the old behaviour was O(assignments x references)).
+    private static readonly ConditionalWeakTable<IOperation, Dictionary<ILocalSymbol, List<(int Position, IOperation Value)>>> LastValueIndex = new();
+
     /// <summary>Returns the innermost function (method, lambda or local function) containing an operation.</summary>
     public static IOperation? FindEnclosingFunction(IOperation operation)
     {
@@ -46,55 +53,53 @@ internal static class EfOperationHelpers
     }
 
     /// <summary>
-    /// Finds a CancellationToken parameter or local that is in scope at the given
-    /// operation. Parameters are preferred, then locals declared before the use.
+    /// Finds a CancellationToken that is lexically in scope at the given operation.
+    /// Uses the semantic model's LookupSymbols instead of a syntactic scan: a token
+    /// declared earlier in a sibling block is not in scope, and passing it to the
+    /// code fix would produce CS0103.
     /// </summary>
     public static ISymbol? FindCancellationTokenInScope(IOperation operation, EfSymbols symbols)
     {
-        var function = FindEnclosingFunction(operation);
-        if (function is null)
+        var model = operation.SemanticModel;
+        if (model is null)
         {
             return null;
         }
 
-        if (GetFunctionSymbol(function) is IMethodSymbol method)
-        {
-            foreach (var parameter in method.Parameters)
-            {
-                if (symbols.IsCancellationTokenType(parameter.Type))
-                {
-                    return parameter;
-                }
-            }
-        }
-
-        return FindCancellationTokenLocal(function, operation.Syntax.SpanStart, symbols);
-    }
-
-    private static ILocalSymbol? FindCancellationTokenLocal(IOperation body, int usePosition, EfSymbols symbols)
-    {
-        ILocalSymbol? best = null;
+        var usePosition = operation.Syntax.SpanStart;
+        ISymbol? best = null;
         var bestPosition = -1;
 
-        foreach (var node in body.DescendantsAndSelf())
+        foreach (var candidate in model.LookupSymbols(usePosition))
         {
-            ILocalSymbol? local = null;
-            if (node is IVariableDeclaratorOperation declarator
-                && declarator.Syntax.SpanStart <= usePosition
-                && symbols.IsCancellationTokenType(declarator.Symbol.Type))
+            ITypeSymbol? type = candidate switch
             {
-                local = declarator.Symbol;
+                ILocalSymbol local => local.Type,
+                IParameterSymbol parameter => parameter.Type,
+                _ => null,
+            };
+
+            if (type is null || !symbols.IsCancellationTokenType(type))
+            {
+                continue;
             }
 
-            var position = node.Syntax.SpanStart;
-            if (local is not null && position <= usePosition && position > bestPosition)
+            var declarationPosition = GetDeclarationPosition(candidate);
+            if (declarationPosition <= usePosition && declarationPosition > bestPosition)
             {
-                best = local;
-                bestPosition = position;
+                best = candidate;
+                bestPosition = declarationPosition;
             }
         }
 
         return best;
+    }
+
+    private static int GetDeclarationPosition(ISymbol symbol)
+    {
+        return symbol.DeclaringSyntaxReferences.Length > 0
+            ? symbol.DeclaringSyntaxReferences[0].GetSyntax().SpanStart
+            : -1;
     }
 
     /// <summary>
@@ -103,34 +108,16 @@ internal static class EfOperationHelpers
     /// </summary>
     public static IOperation? FindLastValueForSymbol(IOperation body, ILocalSymbol local, int usePosition)
     {
+        if (!GetLastValueIndex(body).TryGetValue(local, out var values))
+        {
+            return null;
+        }
+
         IOperation? best = null;
         var bestPosition = -1;
-
-        foreach (var node in body.DescendantsAndSelf())
+        foreach (var (position, value) in values)
         {
-            IOperation? value = null;
-            switch (node)
-            {
-                case IVariableDeclaratorOperation declarator
-                    when SymbolEqualityComparer.Default.Equals(declarator.Symbol, local) && declarator.Initializer is not null:
-                    value = declarator.Initializer.Value;
-                    break;
-
-                case ISimpleAssignmentOperation assignment
-                    when assignment.Target is ILocalReferenceOperation target
-                        && SymbolEqualityComparer.Default.Equals(target.Local, local):
-                    value = assignment.Value;
-                    break;
-
-                case ICompoundAssignmentOperation compound
-                    when compound.Target is ILocalReferenceOperation compoundTarget
-                        && SymbolEqualityComparer.Default.Equals(compoundTarget.Local, local):
-                    value = compound.Value;
-                    break;
-            }
-
-            var position = node.Syntax.SpanStart;
-            if (value is not null && position <= usePosition && position > bestPosition)
+            if (position <= usePosition && position > bestPosition)
             {
                 best = value;
                 bestPosition = position;
@@ -138,6 +125,51 @@ internal static class EfOperationHelpers
         }
 
         return best;
+    }
+
+    private static Dictionary<ILocalSymbol, List<(int Position, IOperation Value)>> GetLastValueIndex(IOperation body)
+    {
+        return LastValueIndex.GetValue(body, static bodyOperation =>
+        {
+            var index = new Dictionary<ILocalSymbol, List<(int Position, IOperation Value)>>(SymbolEqualityComparer.Default);
+            foreach (var node in bodyOperation.DescendantsAndSelf())
+            {
+                ILocalSymbol? local = null;
+                IOperation? value = null;
+                switch (node)
+                {
+                    case IVariableDeclaratorOperation declarator when declarator.Initializer is not null:
+                        local = declarator.Symbol;
+                        value = declarator.Initializer.Value;
+                        break;
+
+                    case ISimpleAssignmentOperation assignment when assignment.Target is ILocalReferenceOperation target:
+                        local = target.Local;
+                        value = assignment.Value;
+                        break;
+
+                    case ICompoundAssignmentOperation compound when compound.Target is ILocalReferenceOperation compoundTarget:
+                        local = compoundTarget.Local;
+                        value = compound.Value;
+                        break;
+                }
+
+                if (local is null || value is null)
+                {
+                    continue;
+                }
+
+                if (!index.TryGetValue(local, out var entries))
+                {
+                    entries = new List<(int Position, IOperation Value)>();
+                    index.Add(local, entries);
+                }
+
+                entries.Add((node.Syntax.SpanStart, value));
+            }
+
+            return index;
+        });
     }
 
     /// <summary>

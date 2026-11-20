@@ -120,6 +120,22 @@ public class SyncOverAsyncAnalyzerTests
             """);
     }
 
+    // Hand-derived: DbSet<T>.Find is the synchronous lookup with an async equivalent,
+    // just like DbContext.Find<T>. It must be diagnosed inside an async method.
+    [Fact]
+    public async Task FindOnDbSet_InAsyncMethod_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<SyncOverAsyncAnalyzer>("""
+            public class Sample
+            {
+                public async Task<Blog> M(BlogContext db)
+                {
+                    return db.Blogs.{|EFL2001:Find|}(1);
+                }
+            }
+            """);
+    }
+
     [Fact]
     public async Task ToList_InSyncMethod_NoDiagnostic()
     {

@@ -194,6 +194,66 @@ public class MissingCancellationTokenAnalyzerTests
     }
 
     [Fact]
+    public async Task TokenDeclaredInSiblingBlock_NoDiagnostic()
+    {
+        // Hand-derived: `ct` is declared inside a closed `if` block, so it is not in
+        // scope at the ToListAsync call. Passing it would not compile (CS0103).
+        await EfLintTestResources.VerifyAnalyzerAsync<MissingCancellationTokenAnalyzer>("""
+            public class Sample
+            {
+                public async Task M(BlogContext db)
+                {
+                    if (true)
+                    {
+                        var ct = CancellationToken.None;
+                    }
+                    var blogs = await db.Blogs.ToListAsync();
+                }
+            }
+            """);
+    }
+
+    [Fact]
+    public async Task TokenDeclaredInSiblingLoop_NoDiagnostic()
+    {
+        // Hand-derived: a token declared in an earlier loop body is out of scope
+        // after the loop, so the code fix would produce uncompilable code.
+        await EfLintTestResources.VerifyAnalyzerAsync<MissingCancellationTokenAnalyzer>("""
+            public class Sample
+            {
+                public async Task M(BlogContext db)
+                {
+                    for (int i = 0; i < 1; i++)
+                    {
+                        var ct = CancellationToken.None;
+                    }
+                    var blogs = await db.Blogs.ToListAsync();
+                }
+            }
+            """);
+    }
+
+    [Fact]
+    public async Task TokenDeclaredInEnclosingBlock_Reports()
+    {
+        // Hand-derived: `ct` is declared in a block that still encloses the call,
+        // so it is in scope and the fix should be offered.
+        await EfLintTestResources.VerifyAnalyzerAsync<MissingCancellationTokenAnalyzer>("""
+            public class Sample
+            {
+                public async Task M(BlogContext db)
+                {
+                    var ct = CancellationToken.None;
+                    if (true)
+                    {
+                        var blogs = await db.Blogs.{|EFL2002:ToListAsync|}();
+                    }
+                }
+            }
+            """);
+    }
+
+    [Fact]
     public async Task TokenDeclaredAfterUse_NoDiagnostic()
     {
         await EfLintTestResources.VerifyAnalyzerAsync<MissingCancellationTokenAnalyzer>("""

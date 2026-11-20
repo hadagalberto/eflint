@@ -85,11 +85,18 @@ public sealed class SyncOverAsyncAnalyzer : DiagnosticAnalyzer
             return;
         }
 
-        var isContextMethod = method.Name is "SaveChanges" or "Find"
-            && symbols.IsDbContextType(method.ContainingType);
+        var isFind = method.Name == "Find";
+        // Find exists on both DbContext and DbSet<T>. A DbSet<T> receiver is not a
+        // DbContext, so the old guard sent DbSet.Find down the materializer path
+        // (where "Find" is unknown) and silently dropped the diagnostic.
+        var isContextMethod = (isFind || method.Name == "SaveChanges")
+            && (symbols.IsDbContextType(method.ContainingType)
+                || (isFind && symbols.IsDbSetType(method.ContainingType)));
         if (isContextMethod)
         {
-            if (!symbols.IsDbContextType(invocation.Instance?.Type))
+            var instanceType = invocation.Instance?.Type;
+            if (!symbols.IsDbContextType(instanceType)
+                && !(isFind && symbols.IsDbSetType(instanceType)))
             {
                 return;
             }
@@ -116,9 +123,9 @@ public sealed class SyncOverAsyncAnalyzer : DiagnosticAnalyzer
 
         var properties = ImmutableDictionary<string, string?>.Empty
             .Add(AsyncNameProperty, asyncName)
-            .Add(IsFindProperty, method.Name == "Find" ? "true" : "false");
+            .Add(IsFindProperty, isFind ? "true" : "false");
 
-        if (method.Name == "Find" && method.TypeArguments.Length > 0)
+        if (isFind && method.TypeArguments.Length > 0)
         {
             properties = properties.Add(EntityTypeProperty, method.TypeArguments[0].ToDisplayString());
         }

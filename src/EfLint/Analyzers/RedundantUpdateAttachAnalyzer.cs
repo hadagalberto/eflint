@@ -110,16 +110,37 @@ public sealed class RedundantUpdateAttachAnalyzer : DiagnosticAnalyzer
     {
         var a = RawSqlHelpers.Unwrap(left);
         var b = RawSqlHelpers.Unwrap(right);
-        if (a is ILocalReferenceOperation la && b is ILocalReferenceOperation lb)
+        return a switch
         {
-            return SymbolEqualityComparer.Default.Equals(la.Local, lb.Local);
+            ILocalReferenceOperation la =>
+                b is ILocalReferenceOperation lb
+                && SymbolEqualityComparer.Default.Equals(la.Local, lb.Local),
+            IParameterReferenceOperation pa =>
+                b is IParameterReferenceOperation pb
+                && SymbolEqualityComparer.Default.Equals(pa.Parameter, pb.Parameter),
+            // A context held in a field or property is the same value only when both
+            // the member symbol and its receiver agree (a._db is not b._db).
+            IFieldReferenceOperation fa =>
+                b is IFieldReferenceOperation fb
+                && SymbolEqualityComparer.Default.Equals(fa.Field, fb.Field)
+                && SameInstance(fa.Instance, fb.Instance),
+            IPropertyReferenceOperation propertyA =>
+                b is IPropertyReferenceOperation propertyB
+                && SymbolEqualityComparer.Default.Equals(propertyA.Property, propertyB.Property)
+                && SameInstance(propertyA.Instance, propertyB.Instance),
+            IInstanceReferenceOperation =>
+                b is IInstanceReferenceOperation,
+            _ => false,
+        };
+    }
+
+    private static bool SameInstance(IOperation? left, IOperation? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
         }
 
-        if (a is IParameterReferenceOperation pa && b is IParameterReferenceOperation pb)
-        {
-            return SymbolEqualityComparer.Default.Equals(pa.Parameter, pb.Parameter);
-        }
-
-        return false;
+        return SameValue(left, right);
     }
 }

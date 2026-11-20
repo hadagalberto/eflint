@@ -197,15 +197,112 @@ public class LargeContainsAnalyzerTests
             """);
     }
 
+    // Corrected: an array parameter has no statically known size. In an EF query lambda it is
+    // exactly the unbounded in-memory collection the rule warns about (review defect 2).
     [Fact]
-    public async Task ParameterCollection_CountUnknown_NoDiagnostic()
+    public async Task ParameterCollection_CountUnknown_Reports()
     {
         await EfLintTestResources.VerifyAnalyzerAsync<LargeContainsAnalyzer>("""
             public class Sample
             {
                 public void M(BlogContext db, int[] ids)
                 {
-                    var blogs = db.Blogs.Where(b => ids.Contains(b.Id)).ToList();
+                    var blogs = db.Blogs.Where(b => ids.{|EFL1009:Contains|}(b.Id)).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: List<T> parameter size is unknown and can be arbitrarily large.
+    [Fact]
+    public async Task ListParameter_CountUnknown_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<LargeContainsAnalyzer>("""
+            public class Sample
+            {
+                public void M(BlogContext db, List<int> ids)
+                {
+                    var blogs = db.Blogs.Where(b => ids.{|EFL1009:Contains|}(b.Id)).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: IEnumerable<T> parameter is the canonical large collection shape.
+    [Fact]
+    public async Task EnumerableParameter_CountUnknown_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<LargeContainsAnalyzer>("""
+            public class Sample
+            {
+                public void M(BlogContext db, IEnumerable<int> ids)
+                {
+                    var count = db.Blogs.Count(b => ids.{|EFL1009:Contains|}(b.Id));
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: a field's contents are not visible at the call site.
+    [Fact]
+    public async Task FieldCollection_CountUnknown_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<LargeContainsAnalyzer>("""
+            public class Sample
+            {
+                private readonly List<int> _ids = new();
+
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.Where(b => _ids.{|EFL1009:Contains|}(b.Id)).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: local initialized from a method call has no statically known size.
+    [Fact]
+    public async Task LocalFromMethodCall_CountUnknown_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<LargeContainsAnalyzer>("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var ids = GetIds();
+                    var blogs = db.Blogs.Where(b => ids.{|EFL1009:Contains|}(b.Id)).ToList();
+                }
+
+                private static int[] GetIds() => new[] { 1, 2, 3 };
+            }
+            """);
+    }
+
+    // Hand-derived: two values cannot overflow a provider parameter list.
+    [Fact]
+    public async Task SmallInlineArray_NoDiagnostic()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<LargeContainsAnalyzer>("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.Where(b => new[] { 1, 2 }.Contains(b.Id)).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: an EF queryable source is a SQL subquery, not an in-memory collection.
+    [Fact]
+    public async Task EfQueryableSource_NoDiagnostic()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<LargeContainsAnalyzer>("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.Where(b => db.Blogs.Select(x => x.Id).Contains(b.Id)).ToList();
                 }
             }
             """);

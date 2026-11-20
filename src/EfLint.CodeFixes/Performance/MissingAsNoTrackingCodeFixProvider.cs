@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Composition;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
@@ -36,7 +37,8 @@ public sealed class MissingAsNoTrackingCodeFixProvider : CodeFixProvider
             var invocation = FindInvocation(root, diagnostic.Location.SourceSpan);
             if (invocation?.Expression is not MemberAccessExpressionSyntax member
                 || model.GetSymbolInfo(member.Expression).Symbol is INamedTypeSymbol
-                || HasNoTrackingCall(member.Expression))
+                || HasNoTrackingCall(member.Expression)
+                || !CanApplyAsNoTracking(invocation, member.Expression, model))
             {
                 continue;
             }
@@ -65,7 +67,8 @@ public sealed class MissingAsNoTrackingCodeFixProvider : CodeFixProvider
         var invocation = FindInvocation(root, diagnostic.Location.SourceSpan);
         if (invocation?.Expression is not MemberAccessExpressionSyntax member
             || model.GetSymbolInfo(member.Expression).Symbol is INamedTypeSymbol
-            || HasNoTrackingCall(member.Expression))
+            || HasNoTrackingCall(member.Expression)
+            || !CanApplyAsNoTracking(invocation, member.Expression, model))
         {
             return document;
         }
@@ -86,6 +89,54 @@ public sealed class MissingAsNoTrackingCodeFixProvider : CodeFixProvider
     {
         return root.FindNode(span, getInnermostNodeForTie: true)
             .FirstAncestorOrSelf<InvocationExpressionSyntax>();
+    }
+
+    /// <summary>
+    /// Defensive guard: AsNoTracking only exists on IQueryable&lt;TEntity&gt;. Never offer a
+    /// fix for a scalar aggregate or a non-entity element type (would produce CS0452).
+    /// </summary>
+    private static bool CanApplyAsNoTracking(
+        InvocationExpressionSyntax invocation,
+        ExpressionSyntax source,
+        SemanticModel model)
+    {
+        var resultType = model.GetTypeInfo(invocation).Type;
+        if (resultType is null || resultType.IsValueType || resultType.SpecialType == SpecialType.System_String)
+        {
+            return false;
+        }
+
+        var info = model.GetTypeInfo(source);
+        var sourceType = info.Type ?? info.ConvertedType;
+        if (sourceType is null)
+        {
+            return false;
+        }
+
+        var elementType = GetElementType(sourceType)
+            ?? sourceType.AllInterfaces.Select(GetElementType).FirstOrDefault(type => type is not null);
+
+        return elementType is INamedTypeSymbol named
+            && named.TypeKind == TypeKind.Class
+            && !named.IsAnonymousType
+            && named.SpecialType == SpecialType.None;
+    }
+
+    private static ITypeSymbol? GetElementType(ITypeSymbol type)
+    {
+        if (type is not INamedTypeSymbol named || !named.IsGenericType || named.TypeArguments.Length != 1)
+        {
+            return null;
+        }
+
+        var ns = named.ContainingNamespace?.ToDisplayString();
+        return named.OriginalDefinition.Name switch
+        {
+            "IQueryable" or "IOrderedQueryable" when ns == "System.Linq" => named.TypeArguments[0],
+            "IEnumerable" or "ICollection" or "IList" when ns == "System.Collections.Generic" => named.TypeArguments[0],
+            "DbSet" when ns == "Microsoft.EntityFrameworkCore" => named.TypeArguments[0],
+            _ => null,
+        };
     }
 
     private static bool HasNoTrackingCall(ExpressionSyntax source)

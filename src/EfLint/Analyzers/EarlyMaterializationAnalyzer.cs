@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
@@ -65,8 +66,16 @@ public sealed class EarlyMaterializationAnalyzer : DiagnosticAnalyzer
         var semanticModel = context.Operation.SemanticModel;
         if (semanticModel is null
             || semanticModel.GetSymbolInfo(outer, context.CancellationToken).Symbol is not IMethodSymbol outerMethod
-            || outerMethod.Name is not ("Where" or "Select" or "SelectMany" or "OrderBy" or "OrderByDescending" or "Skip" or "Take")
+            || outerMethod.Name is not ("Where" or "Select" or "SelectMany" or "OrderBy" or "OrderByDescending"
+                or "Skip" or "Take" or "Count" or "Any" or "LongCount" or "All")
             || !IsQueryOperator(outerMethod, symbols, outerMethod.Name))
+        {
+            return;
+        }
+
+        // Pushing a client-only lambda into the query changes behavior (or fails to translate).
+        // Do not report a fix for a chain whose first operator cannot run on the server.
+        if (HasClientOnlyLambda(outer, semanticModel, symbols, context.CancellationToken))
         {
             return;
         }
@@ -82,6 +91,39 @@ public sealed class EarlyMaterializationAnalyzer : DiagnosticAnalyzer
             GetNameLocation(syntax),
             name,
             outerMethod.Name));
+    }
+
+    /// <summary>
+    /// True when a lambda passed to the following operator calls a source-declared method.
+    /// Such a predicate only works after materialization and must not be moved server-side.
+    /// </summary>
+    private static bool HasClientOnlyLambda(
+        InvocationExpressionSyntax outer,
+        SemanticModel semanticModel,
+        EfSymbols symbols,
+        System.Threading.CancellationToken cancellationToken)
+    {
+        if (semanticModel.GetOperation(outer, cancellationToken) is not IInvocationOperation operation)
+        {
+            return false;
+        }
+
+        // A lambda argument is wrapped in IDelegateCreationOperation for Func<T> parameters,
+        // so search the whole invocation rather than matching argument.Value directly.
+        foreach (var lambda in operation.DescendantsAndSelf().OfType<IAnonymousFunctionOperation>())
+        {
+            foreach (var node in lambda.DescendantsAndSelf())
+            {
+                if (node is IInvocationOperation call
+                    && EfOperationHelpers.IsUserDefinedMethod(call.TargetMethod)
+                    && !symbols.HasDbFunctionAttribute(call.TargetMethod))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static IOperation? GetQuerySource(IInvocationOperation invocation, EfSymbols symbols)

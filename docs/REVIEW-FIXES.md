@@ -1,0 +1,36 @@
+# Independent review findings — fixes
+
+All findings from the attached milestone file were addressed test-first: a
+failing regression test with a hand-derived expected value (rule semantics, the
+SPEC, or a comment explaining the reasoning) was written and observed to fail
+before the production code was changed. No existing test or assertion was
+deleted or loosened; expectations that encoded a listed defect were corrected
+with a comment citing the review finding. `dotnet build` is warning-free and
+`dotnet test` passes the full suite.
+
+| Item | Regression test(s) | Fix summary | Status |
+|---|---|---|---|
+| **HIGH EFL3001** — SQL quotes preserved around interpolation holes | `RawSqlQuoteFixTests.QuotedInterpolation_FromSqlRaw_SingleQuotesRemoved`, `QuotedInterpolation_TwoHoles_BothQuotePairsRemoved`, `UnsafeQuoteShape_*_NoCodeFixOffered`, `RawSqlCodeFixTests.Concatenation_ExecuteSqlRaw_Fixed` | Code fix now plans quote removal per hole from the parsed SQL segments; removes a single unescaped wrapper pair, and suppresses the fix for asymmetric, escaped, mixed or non-adjacent quotes. | Fixed |
+| **HIGH EFL1007** — moving `SaveChanges()` from a loop-local context causes CS0103 | `SaveChangesInLoopScopeRegressionTests.CodeFix_NotOffered_WhenContextIsLoopLocal`, `Analyzer_StillReportsEfl1007_WhenContextIsLoopLocal`, `CodeFix_FieldBackedContext_StillMovedAndCompiles` | The fix uses `SemanticModel.LookupSymbols` at the insertion point and refuses to move the statement when its receiver is a local declared inside the loop; field/parameter receivers still move. | Fixed |
+| **HIGH EFL2002** — sibling-block token passed out of scope | `MissingCancellationTokenAnalyzerTests.TokenDeclaredInSiblingBlock_NoDiagnostic`, `TokenDeclaredInSiblingLoop_NoDiagnostic`, `TokenDeclaredInEnclosingBlock_Reports` | `FindCancellationTokenInScope` now performs semantic `LookupSymbols` at the call position instead of scanning every local by source position. | Fixed |
+| **MED EFL1003** — scalar projections, `Count`/`Any` and subqueries flagged | `MissingAsNoTrackingAnalyzerTests.SelectThenToList_NoDiagnostic`, `Count_NoDiagnostic`, `Any_NoDiagnostic`, `ScalarCountSubqueryProjection_NoDiagnostic`, `MaterializerInsideExpressionLambda_NoDiagnostic`, `AnonymousTypeProjection_NoDiagnostic` | Materialization must yield a mapped entity (DbSet root type or its navigation), and materializers inside expression lambdas are ignored. | Fixed |
+| **MED EFL2008** — field-held (`_db`) contexts never flagged | `RedundantUpdateAttachAnalyzerTests.FieldHeldContext_ThenUpdate_Reports`, `FieldHeldContext_ThenAttach_Reports`, `PropertyHeldContext_ThenUpdate_Reports`, `DifferentFieldContexts_NoDiagnostic` | `SameValue` now compares field/property references (including their receivers) as well as locals and parameters. | Fixed |
+| **MED EFL2001** — `DbSet.Find` inside async methods missed | `SyncOverAsyncAnalyzerTests.FindOnDbSet_InAsyncMethod_Reports`, `SyncOverAsyncCodeFixTests.FindOnDbSet_NoToken_Fixed` | `Find` on `DbSet<T>` is recognized; the fix emits non-generic `FindAsync` (generic only for `DbContext.Find<TEntity>`) and preserves key arguments. | Fixed |
+| **MED EFL1006** — `OrderBy` stored in an IQueryable local missed | `PaginationWithoutOrderByAnalyzerTests.OrderByInLocalThenSkipAndTake_NoDiagnostic`, `OrderByInAliasedLocalThenSkip_NoDiagnostic` | `WalkSourcesForOrderBy` resolves local values through the shared last-assignment helper before continuing up the chain. | Fixed |
+| **MED EFL1009** — inverted size logic | `LargeContainsAnalyzerTests.ParameterCollection_CountUnknown_Reports`, `ListParameter_CountUnknown_Reports`, `EnumerableParameter_CountUnknown_Reports`, `FieldCollection_CountUnknown_Reports`, `SmallArray_InWhereLambda_NoDiagnostic`, `EfQueryableSource_NoDiagnostic` | Known small literals stay silent; parameters, fields and method results whose size is unknown are reported. Rule docs updated to describe both cases. | Fixed |
+| **LOW EFL2006** — `Include(...).Select(b => b)` flagged and fixed away | `IncludeWithProjectionAnalyzerTests.IncludeBeforeIdentitySelect_NoDiagnostic`, `IncludeBeforeAnonymousProjectionContainingEntity_NoDiagnostic`, `IncludeWithProjectionCodeFixTests.IdentityProjection_CodeFixNotOffered` | Identity/entity-preserving projections are recognized as non-discarding; no diagnostic and no fix for them. | Fixed |
+| **LOW EFL1001** — duplicate materializer, client-only predicates, `AsEnumerable().Count()` | `EarlyMaterializationCodeFixTests.ToListBeforeWhereThenToList_NoDuplicateMaterializer`, `ClientOnlyPredicate_MaterializationStaysBeforeIt`, `AsEnumerableBeforeCount_MaterializerRemoved`, `EarlyMaterializationAnalyzerTests.AsEnumerableBeforeCount_Reports` | Analyzer covers scalar terminal operators; the fix removes an existing trailing materializer instead of appending another, removes the materializer when the terminal operator is scalar, and refuses to move a chain containing a user (non-`[DbFunction]`) method. | Fixed |
+| **LOW EFL1002** — `await CountAsync() > 0` missed | `CountComparisonAnalyzerTests.AwaitCountAsyncGreaterThanZero_Reports`, `AwaitLongCountAsyncNotEqualsZero_Reports`, `CountComparisonCodeFixTests.AwaitCountAsyncGreaterThanZero_UsesAnyAsync` | Analyzer unwraps `await`, handles `CountAsync`/`LongCountAsync`; the fix preserves the `await` wrapper and renames to `AnyAsync`. | Fixed |
+| **LOW EFL2003** — client method in the final `Select` flagged | `ClientEvaluationAnalyzerTests.UserMethod_InFinalSelectProjection_NoDiagnostic`, `UserMethod_InNonFinalSelect_Reports`, `UserMethod_InSubquerySelect_Reports` | The outermost final projection is exempt (EF evaluates it client-side after translation); non-final and nested subquery projections remain violations. | Fixed |
+| **Perf** — symbol cache, hot paths, local-value lookup, semantic models | `EfSymbolsTests.Create_IsCachedPerCompilation`, `QueryChainTests`, full suite | `EfSymbols` cached once per `Compilation` via `ConditionalWeakTable`; `FindLastValueForSymbol` builds a per-body index; `QueryChain` uses an explicit argument loop instead of capturing LINQ predicates and caches semantic models per syntax tree. | Fixed |
+| **Compile checks for every code fix** | `AppliedCodeFixCompilationTests` (9 cases), `FixedCodeCompilationTests.FixedDocument_HasZeroCompilerErrors` (13 cases) | Every fix is applied and the resulting document compiled against the real EF Core 8 references with zero errors; includes block scopes, field-held contexts and scalar projections. | Fixed |
+| **Opinion** — lower EFL1005 severity for `First(x => x.Id == id)` | n/a | Not applied: optional, and SPEC.md explicitly specifies `First()/FirstOrDefault()` without `OrderBy` as a warning. Lowering it would contradict the specification. | Not applied (optional) |
+
+## Existing assertions corrected
+
+- `RawSqlCodeFixTests.Concatenation_ExecuteSqlRaw_Fixed` and `FixAll_AllDiagnosticsFixed`:
+  expected output kept the SQL quotes around the parameter. Corrected to the
+  parameter-only form with a comment citing finding EFL3001.
+- `LargeContainsAnalyzerTests` small-literal expectations were reviewed against
+  the updated rule documentation; no assertion was removed, and new positive
+  tests for unknown-size collections were added.

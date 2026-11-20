@@ -45,12 +45,15 @@ public class RawSqlCodeFixTests
                 }
             }
             """,
+            // EFL3001 fix must drop the SQL quotes around the interpolation hole.
+            // Keeping '{name}' would turn the quotes into part of the parameter value,
+            // so EF would compare against a literal string including the quotes.
             """
             public class Sample
             {
                 public void M(BlogContext db, string name)
                 {
-                    db.Database.ExecuteSql($"DELETE FROM Blogs WHERE Name = '{name}'");
+                    db.Database.ExecuteSql($"DELETE FROM Blogs WHERE Name = {name}");
                 }
             }
             """);
@@ -170,13 +173,15 @@ public class RawSqlCodeFixTests
             }
             """;
 
+        // EFL3001 fix must drop the SQL quotes around the interpolation hole;
+        // '{name}' would parameterize the quote characters as part of the value.
         const string after = """
             public class Sample
             {
                 public void M(BlogContext db, string name)
                 {
                     db.Blogs.FromSql($"SELECT * FROM Blogs WHERE Name = {name}");
-                    db.Database.ExecuteSql($"DELETE FROM Blogs WHERE Name = '{name}'");
+                    db.Database.ExecuteSql($"DELETE FROM Blogs WHERE Name = {name}");
                 }
             }
             """;

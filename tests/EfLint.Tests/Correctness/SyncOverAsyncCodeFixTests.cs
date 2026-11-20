@@ -152,6 +152,33 @@ public class SyncOverAsyncCodeFixTests
             """);
     }
 
+    // Hand-derived: DbSet<T>.FindAsync(params object[] keyValues) is the direct async
+    // counterpart of DbSet<T>.Find, so the fixed code is `await db.Blogs.FindAsync(1)`
+    // and must compile against the real EF Core 8 references.
+    [Fact]
+    public async Task FindOnDbSet_NoToken_Fixed()
+    {
+        await EfLintTestResources.VerifyCodeFixAsync<SyncOverAsyncAnalyzer, SyncOverAsyncCodeFixProvider>(
+            """
+            public class Sample
+            {
+                public async Task<Blog> M(BlogContext db)
+                {
+                    return db.Blogs.{|EFL2001:Find|}(1);
+                }
+            }
+            """,
+            """
+            public class Sample
+            {
+                public async Task<Blog> M(BlogContext db)
+                {
+                    return await db.Blogs.FindAsync(1);
+                }
+            }
+            """);
+    }
+
     [Fact]
     public async Task FixAll_MultipleCalls_Fixed()
     {

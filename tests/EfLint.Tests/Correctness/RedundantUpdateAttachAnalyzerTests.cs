@@ -236,4 +236,80 @@ public class RedundantUpdateAttachAnalyzerTests
             }
             """);
     }
+
+    // Hand-derived: the entity is materialized through _db.Blogs and then handed to
+    // _db.Update. Both operations use the same field symbol, so EFL2008 must report.
+    [Fact]
+    public async Task FieldHeldContext_ThenUpdate_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<RedundantUpdateAttachAnalyzer>("""
+            public class Sample
+            {
+                private readonly BlogContext _db = new BlogContext();
+
+                public void M()
+                {
+                    var blog = _db.Blogs.First();
+                    _db.{|EFL2008:Update|}(blog);
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: same field symbol on both sides of the materialize/attach pair.
+    [Fact]
+    public async Task FieldHeldContext_ThenAttach_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<RedundantUpdateAttachAnalyzer>("""
+            public class Sample
+            {
+                private readonly BlogContext _db = new BlogContext();
+
+                public void M()
+                {
+                    var blog = _db.Blogs.Where(b => b.Id > 0).FirstOrDefault();
+                    _db.{|EFL2008:Attach|}(blog);
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: property-backed context is still one context instance; the query
+    // root and the Update receiver are the same property symbol on the same `this`.
+    [Fact]
+    public async Task PropertyHeldContext_ThenUpdate_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<RedundantUpdateAttachAnalyzer>("""
+            public class Sample
+            {
+                private BlogContext Db { get; } = new BlogContext();
+
+                public void M()
+                {
+                    var blog = Db.Blogs.First();
+                    Db.{|EFL2008:Update|}(blog);
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: two distinct fields are two different contexts, so attaching the
+    // entity loaded from _db to _other is meaningful and must stay diagnostic-free.
+    [Fact]
+    public async Task DifferentFieldContexts_NoDiagnostic()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<RedundantUpdateAttachAnalyzer>("""
+            public class Sample
+            {
+                private readonly BlogContext _db = new BlogContext();
+                private readonly BlogContext _other = new BlogContext();
+
+                public void M()
+                {
+                    var blog = _db.Blogs.First();
+                    _other.Update(blog);
+                }
+            }
+            """);
+    }
 }

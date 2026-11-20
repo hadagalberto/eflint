@@ -85,6 +85,19 @@ public sealed class PaginationWithoutOrderByAnalyzer : DiagnosticAnalyzer
         var current = RawSqlHelpers.Unwrap(operation);
         for (var depth = 0; depth < MaxChainDepth; depth++)
         {
+            // A query staged in a local must be followed to its initializer/assignment
+            // before the receiver chain can be inspected for OrderBy.
+            var localValue = FollowLocal(current);
+            if (localValue is not null)
+            {
+                current = localValue;
+                // The value may be another local; re-run the checks on it.
+                if (current is not IInvocationOperation)
+                {
+                    continue;
+                }
+            }
+
             if (current is not IInvocationOperation invocation)
             {
                 return false;
@@ -134,6 +147,28 @@ public sealed class PaginationWithoutOrderByAnalyzer : DiagnosticAnalyzer
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Resolves a local reference to the last value assigned to it before this use,
+    /// mirroring QueryChain's local handling so staging a query in a variable does
+    /// not hide an existing OrderBy from the pagination check.
+    /// </summary>
+    private static IOperation? FollowLocal(IOperation operation)
+    {
+        if (RawSqlHelpers.Unwrap(operation) is not ILocalReferenceOperation local)
+        {
+            return null;
+        }
+
+        var body = EfOperationHelpers.FindEnclosingFunction(local);
+        if (body is null)
+        {
+            return null;
+        }
+
+        var value = EfOperationHelpers.FindLastValueForSymbol(body, local.Local, local.Syntax.SpanStart);
+        return value is null ? null : RawSqlHelpers.Unwrap(value);
     }
 
     private static IOperation? GetSource(IInvocationOperation invocation, EfSymbols symbols)

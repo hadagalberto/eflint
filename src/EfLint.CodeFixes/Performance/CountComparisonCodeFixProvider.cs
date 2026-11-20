@@ -33,7 +33,7 @@ public sealed class CountComparisonCodeFixProvider : CodeFixProvider
 
         foreach (var diagnostic in context.Diagnostics)
         {
-            if (!TryFindBinary(root, diagnostic.Location.SourceSpan, out _, out _))
+            if (!TryFindBinary(root, diagnostic.Location.SourceSpan, out _, out _, out _))
             {
                 continue;
             }
@@ -54,7 +54,7 @@ public sealed class CountComparisonCodeFixProvider : CodeFixProvider
     {
         var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
         if (root is null
-            || !TryFindBinary(root, diagnostic.Location.SourceSpan, out var binary, out var invocation))
+            || !TryFindBinary(root, diagnostic.Location.SourceSpan, out var binary, out var invocation, out var awaited))
         {
             return document;
         }
@@ -65,12 +65,16 @@ public sealed class CountComparisonCodeFixProvider : CodeFixProvider
             SimpleNameSyntax simple => simple,
             _ => null,
         };
-        if (oldName is null || oldName.Identifier.ValueText != "Count")
+        if (oldName is null || !IsCountName(oldName.Identifier.ValueText))
         {
             return document;
         }
 
-        var newName = SyntaxFactory.IdentifierName("Any").WithTriviaFrom(oldName);
+        // The analyzer records whether this is a sync Count (Any) or an awaited
+        // CountAsync/LongCountAsync (AnyAsync) so the await is preserved correctly.
+        diagnostic.Properties.TryGetValue(CountComparisonAnalyzer.ReplacementMethodProperty, out var replacementName);
+        replacementName = string.IsNullOrEmpty(replacementName) ? "Any" : replacementName;
+        var newName = SyntaxFactory.IdentifierName(replacementName!).WithTriviaFrom(oldName);
         ExpressionSyntax newExpression = invocation.Expression switch
         {
             MemberAccessExpressionSyntax member => member.WithName(newName),
@@ -81,7 +85,10 @@ public sealed class CountComparisonCodeFixProvider : CodeFixProvider
         // predicate overload Count(predicate) it must become Any(predicate).
         var renamedInvocation = invocation.WithExpression(newExpression);
 
-        var replacement = renamedInvocation.WithoutTrivia()
+        ExpressionSyntax core = renamedInvocation.WithoutTrivia();
+        // The old fix replaced the whole comparison and silently removed `await`.
+        ExpressionSyntax replacement = awaited ? SyntaxFactory.AwaitExpression(core) : core;
+        replacement = replacement
             .WithLeadingTrivia(binary!.GetLeadingTrivia())
             .WithTrailingTrivia(binary.GetTrailingTrivia());
 
@@ -92,22 +99,37 @@ public sealed class CountComparisonCodeFixProvider : CodeFixProvider
         SyntaxNode root,
         TextSpan span,
         out BinaryExpressionSyntax? binary,
-        out InvocationExpressionSyntax? invocation)
+        out InvocationExpressionSyntax? invocation,
+        out bool awaited)
     {
         binary = null;
         invocation = null;
+        awaited = false;
 
         var name = root.FindNode(span, getInnermostNodeForTie: true).FirstAncestorOrSelf<SimpleNameSyntax>();
         var foundInvocation = name?.FirstAncestorOrSelf<InvocationExpressionSyntax>();
-        if (foundInvocation is null || name!.Identifier.ValueText != "Count")
+        if (foundInvocation is null || !IsCountName(name!.Identifier.ValueText))
         {
             return false;
         }
 
         ExpressionSyntax current = foundInvocation;
-        while (current.Parent is ParenthesizedExpressionSyntax parenthesized)
+        while (true)
         {
-            current = parenthesized;
+            switch (current.Parent)
+            {
+                case ParenthesizedExpressionSyntax parenthesized:
+                    current = parenthesized;
+                    continue;
+                case AwaitExpressionSyntax awaitExpression:
+                    awaited = true;
+                    current = awaitExpression;
+                    continue;
+                default:
+                    break;
+            }
+
+            break;
         }
 
         if (current.Parent is not BinaryExpressionSyntax parentBinary)
@@ -119,4 +141,7 @@ public sealed class CountComparisonCodeFixProvider : CodeFixProvider
         invocation = foundInvocation;
         return true;
     }
+
+    private static bool IsCountName(string name) =>
+        name is "Count" or "CountAsync" or "LongCount" or "LongCountAsync";
 }

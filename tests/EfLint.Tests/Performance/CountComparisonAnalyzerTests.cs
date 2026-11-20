@@ -43,6 +43,52 @@ public class CountComparisonAnalyzerTests
         await VerifyAsync("db.Blogs.Where(b => b.Id > 0).{|EFL1002:Count|}() > 0");
     }
 
+    // Hand-derived: `await CountAsync() > 0` is an existence check; the cheaper
+    // equivalent is `await AnyAsync()`. Expect one EFL1002 on CountAsync.
+    [Fact]
+    public async Task AwaitCountAsyncGreaterThanZero_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<CountComparisonAnalyzer>("""
+            public class Sample
+            {
+                public async Task<bool> M(BlogContext db)
+                {
+                    return await db.Blogs.{|EFL1002:CountAsync|}() > 0;
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: same existence check on the long async counter.
+    [Fact]
+    public async Task AwaitLongCountAsyncNotEqualsZero_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<CountComparisonAnalyzer>("""
+            public class Sample
+            {
+                public async Task<bool> M(BlogContext db)
+                {
+                    return await db.Blogs.{|EFL1002:LongCountAsync|}() != 0;
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: > 1 is not an existence check, so no diagnostic.
+    [Fact]
+    public async Task AwaitCountAsyncGreaterThanOne_NoDiagnostic()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<CountComparisonAnalyzer>("""
+            public class Sample
+            {
+                public async Task<bool> M(BlogContext db)
+                {
+                    return await db.Blogs.CountAsync() > 1;
+                }
+            }
+            """);
+    }
+
     [Fact]
     public async Task CountGreaterThanOne_NoDiagnostic()
     {

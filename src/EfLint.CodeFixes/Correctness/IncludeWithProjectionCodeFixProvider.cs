@@ -41,7 +41,7 @@ public sealed class IncludeWithProjectionCodeFixProvider : CodeFixProvider
             }
 
             var invocation = FindInvocation(root, diagnostic.Location.SourceSpan);
-            if (invocation is null || GetSource(model, invocation) is null)
+            if (invocation is null || GetSource(model, invocation) is null || HasIdentityProjection(invocation))
             {
                 continue;
             }
@@ -69,7 +69,7 @@ public sealed class IncludeWithProjectionCodeFixProvider : CodeFixProvider
 
         var invocation = FindInvocation(root, diagnostic.Location.SourceSpan);
         var source = invocation is null ? null : GetSource(model, invocation);
-        if (invocation is null || source is null)
+        if (invocation is null || source is null || HasIdentityProjection(invocation))
         {
             return document;
         }
@@ -85,6 +85,57 @@ public sealed class IncludeWithProjectionCodeFixProvider : CodeFixProvider
     {
         return root.FindNode(span, getInnermostNodeForTie: true)
             .FirstAncestorOrSelf<InvocationExpressionSyntax>();
+    }
+
+    /// <summary>
+    /// Defensive guard: removing an Include before an identity Select would change which
+    /// navigations are populated, so no fix may be offered for that shape.
+    /// </summary>
+    private static bool HasIdentityProjection(InvocationExpressionSyntax include)
+    {
+        ExpressionSyntax current = include;
+        while (current.Parent is MemberAccessExpressionSyntax member
+            && member.Expression == current
+            && member.Parent is InvocationExpressionSyntax outer
+            && outer.Expression == member)
+        {
+            if (member.Name.Identifier.ValueText is "Select" or "SelectMany")
+            {
+                return outer.ArgumentList.Arguments.Any(argument =>
+                    argument.Expression is LambdaExpressionSyntax lambda && IsIdentityLambda(lambda));
+            }
+
+            current = outer;
+        }
+
+        return false;
+    }
+
+    private static bool IsIdentityLambda(LambdaExpressionSyntax lambda)
+    {
+        var parameterName = lambda switch
+        {
+            SimpleLambdaExpressionSyntax simple => simple.Parameter.Identifier.ValueText,
+            ParenthesizedLambdaExpressionSyntax parenthesized when parenthesized.ParameterList.Parameters.Count == 1
+                => parenthesized.ParameterList.Parameters[0].Identifier.ValueText,
+            _ => null,
+        };
+
+        if (parameterName is null)
+        {
+            return false;
+        }
+
+        ExpressionSyntax? body = lambda.Body switch
+        {
+            ParenthesizedExpressionSyntax parenthesized => parenthesized.Expression,
+            CastExpressionSyntax cast => cast.Expression,
+            ExpressionSyntax expression => expression,
+            _ => null,
+        };
+
+        return body is IdentifierNameSyntax identifier
+            && identifier.Identifier.ValueText == parameterName;
     }
 
     private static ExpressionSyntax? GetSource(SemanticModel model, InvocationExpressionSyntax invocation)

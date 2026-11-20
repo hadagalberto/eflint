@@ -90,7 +90,16 @@ public sealed class RawSqlToFormattableStringCodeFixProvider : CodeFixProvider
             return document;
         }
 
-        var newSql = BuildInterpolatedString(argument.Expression).WithTriviaFrom(argument.Expression);
+        if (!TryBuildFixedContents(argument.Expression, out var contents))
+        {
+            return document;
+        }
+
+        var newSql = SyntaxFactory.InterpolatedStringExpression(
+                SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
+                contents,
+                SyntaxFactory.Token(SyntaxKind.InterpolatedStringEndToken))
+            .WithTriviaFrom(argument.Expression);
         var invocationWithSql = currentInvocation.ReplaceNode(argument.Expression, newSql);
 
         var methodExpression = Unparen(invocationWithSql.Expression);
@@ -160,48 +169,248 @@ public sealed class RawSqlToFormattableStringCodeFixProvider : CodeFixProvider
         return invocation.ArgumentList.Arguments.Count > 0 ? invocation.ArgumentList.Arguments[0] : null;
     }
 
-    private static bool CanConvert(ExpressionSyntax expression)
+    /// <summary>
+    /// True only when the SQL text can be converted without changing what the
+    /// parameters mean. A quoted interpolation hole must have its SQL quotes
+    /// removed (otherwise the quotes become part of the parameter value), and an
+    /// ambiguous quote shape must suppress the fix entirely.
+    /// </summary>
+    private static bool CanConvert(ExpressionSyntax expression) =>
+        TryBuildFixedContents(expression, out _);
+
+    private static bool TryBuildFixedContents(
+        ExpressionSyntax expression,
+        out SyntaxList<InterpolatedStringContentSyntax> contents)
     {
+        contents = default;
+        var segments = new List<SqlSegment>();
         var unwrapped = Unparen(expression);
-        return unwrapped is InterpolatedStringExpressionSyntax || IsStringConcatenation(unwrapped);
+
+        if (unwrapped is InterpolatedStringExpressionSyntax interpolated)
+        {
+            foreach (var content in interpolated.Contents)
+            {
+                switch (content)
+                {
+                    case InterpolatedStringTextSyntax text:
+                        segments.Add(SqlSegment.ForText(text.TextToken.ValueText ?? string.Empty, text));
+                        break;
+                    case InterpolationSyntax hole:
+                        segments.Add(SqlSegment.ForHole(hole));
+                        break;
+                    default:
+                        return false;
+                }
+            }
+        }
+        else if (IsStringConcatenation(unwrapped))
+        {
+            var parts = new List<ExpressionSyntax>();
+            FlattenConcatenation(unwrapped, parts);
+            foreach (var part in parts)
+            {
+                if (part is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.StringLiteralExpression))
+                {
+                    segments.Add(SqlSegment.ForText(literal.Token.ValueText ?? string.Empty, literal));
+                }
+                else
+                {
+                    segments.Add(SqlSegment.ForHole(part.WithoutTrivia()));
+                }
+            }
+        }
+        else
+        {
+            return false;
+        }
+
+        if (!TryPlanQuoteRemoval(segments))
+        {
+            return false;
+        }
+
+        var result = new List<InterpolatedStringContentSyntax>(segments.Count);
+        foreach (var segment in segments)
+        {
+            if (segment.IsHole)
+            {
+                result.Add(segment.Source is InterpolationSyntax interpolation
+                    ? interpolation
+                    : SyntaxFactory.Interpolation((ExpressionSyntax)segment.Source));
+                continue;
+            }
+
+            var value = segment.Text;
+            if (segment.TrimStart && value.Length > 0)
+            {
+                value = value.Substring(1);
+            }
+
+            if (segment.TrimEnd && value.Length > 0)
+            {
+                value = value.Substring(0, value.Length - 1);
+            }
+
+            if (value.Length == 0)
+            {
+                continue;
+            }
+
+            var escaped = EscapeInterpolatedText(value);
+            var token = SyntaxFactory.Token(
+                SyntaxTriviaList.Empty,
+                SyntaxKind.InterpolatedStringTextToken,
+                escaped,
+                value,
+                SyntaxTriviaList.Empty);
+            result.Add(SyntaxFactory.InterpolatedStringText(token));
+        }
+
+        contents = SyntaxFactory.List(result);
+        return true;
     }
 
-    private static InterpolatedStringExpressionSyntax BuildInterpolatedString(ExpressionSyntax expression)
+    /// <summary>
+    /// Decides, for every interpolation hole, whether the SQL text immediately
+    /// around it is a single unescaped quote pair, no quote at all, or something
+    /// ambiguous. Mixed policies and ambiguous shapes suppress the fix.
+    /// </summary>
+    private static bool TryPlanQuoteRemoval(List<SqlSegment> segments)
     {
-        var unwrapped = Unparen(expression);
-        if (unwrapped is InterpolatedStringExpressionSyntax existing)
+        var quotedCount = 0;
+        var unquotedCount = 0;
+
+        for (var i = 0; i < segments.Count; i++)
         {
-            return existing;
+            if (!segments[i].IsHole)
+            {
+                continue;
+            }
+
+            var before = i > 0 && !segments[i - 1].IsHole ? segments[i - 1].Text : string.Empty;
+            var after = i + 1 < segments.Count && !segments[i + 1].IsHole ? segments[i + 1].Text : string.Empty;
+
+            var beforeQuote = GetAdjacentQuote(before, fromEnd: true);
+            var afterQuote = GetAdjacentQuote(after, fromEnd: false);
+
+            if (beforeQuote.Kind == AdjacentQuoteKind.Ambiguous
+                || afterQuote.Kind == AdjacentQuoteKind.Ambiguous)
+            {
+                // An escaped quote run cannot be reduced without changing the SQL.
+                return false;
+            }
+
+            if (beforeQuote.Kind == AdjacentQuoteKind.None && afterQuote.Kind == AdjacentQuoteKind.None)
+            {
+                unquotedCount++;
+                continue;
+            }
+
+            if (beforeQuote.Kind == AdjacentQuoteKind.None
+                || afterQuote.Kind == AdjacentQuoteKind.None
+                || beforeQuote.Quote != afterQuote.Quote)
+            {
+                return false;
+            }
+
+            segments[i - 1].TrimEnd = true;
+            segments[i + 1].TrimStart = true;
+            quotedCount++;
         }
 
-        var parts = new List<ExpressionSyntax>();
-        FlattenConcatenation(unwrapped, parts);
+        // Quoting one hole but not another has no single correct transformation.
+        return quotedCount == 0 || unquotedCount == 0;
+    }
 
-        var contents = new List<InterpolatedStringContentSyntax>(parts.Count);
-        foreach (var part in parts)
+    private enum AdjacentQuoteKind
+    {
+        None,
+        Single,
+        Ambiguous,
+    }
+
+    /// <summary>
+    /// Returns the quote character at the edge of <paramref name="text"/> only
+    /// when it is a single (unescaped) quote. A run of two or more identical
+    /// quotes is an escaped SQL quote and makes the whole fix unsafe.
+    /// </summary>
+    private static (AdjacentQuoteKind Kind, char Quote) GetAdjacentQuote(string text, bool fromEnd)
+    {
+        if (text.Length == 0)
         {
-            if (part is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.StringLiteralExpression))
+            return (AdjacentQuoteKind.None, '\0');
+        }
+
+        var index = fromEnd ? text.Length - 1 : 0;
+        var quote = text[index];
+        if (quote != '\'' && quote != '"')
+        {
+            return (AdjacentQuoteKind.None, '\0');
+        }
+
+        var step = fromEnd ? -1 : 1;
+        var count = 0;
+        for (var i = index; i >= 0 && i < text.Length; i += step)
+        {
+            if (text[i] != quote)
             {
-                var value = literal.Token.ValueText ?? string.Empty;
-                var escaped = value.Replace("{", "{{").Replace("}", "}}");
-                var token = SyntaxFactory.Token(
-                    SyntaxTriviaList.Empty,
-                    SyntaxKind.InterpolatedStringTextToken,
-                    escaped,
-                    value,
-                    SyntaxTriviaList.Empty);
-                contents.Add(SyntaxFactory.InterpolatedStringText(token));
+                break;
             }
-            else
+
+            count++;
+            if (count > 1)
             {
-                contents.Add(SyntaxFactory.Interpolation(part.WithoutTrivia()));
+                return (AdjacentQuoteKind.Ambiguous, '\0');
             }
         }
 
-        return SyntaxFactory.InterpolatedStringExpression(
-            SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
-            SyntaxFactory.List(contents),
-            SyntaxFactory.Token(SyntaxKind.InterpolatedStringEndToken));
+        return (AdjacentQuoteKind.Single, quote);
+    }
+
+    private static string EscapeInterpolatedText(string value)
+    {
+        if (value.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var builder = new System.Text.StringBuilder(value.Length);
+        foreach (var c in value)
+        {
+            switch (c)
+            {
+                case '\\': builder.Append("\\\\"); break;
+                case '"': builder.Append("\\\""); break;
+                case '{': builder.Append("{{"); break;
+                case '}': builder.Append("}}"); break;
+                case '\r': builder.Append("\\r"); break;
+                case '\n': builder.Append("\\n"); break;
+                case '\t': builder.Append("\\t"); break;
+                case '\0': builder.Append("\\0"); break;
+                default: builder.Append(c); break;
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private sealed class SqlSegment
+    {
+        private SqlSegment(bool isHole, string text, SyntaxNode source)
+        {
+            IsHole = isHole;
+            Text = text;
+            Source = source;
+        }
+
+        public bool IsHole { get; }
+        public string Text { get; }
+        public SyntaxNode Source { get; }
+        public bool TrimStart { get; set; }
+        public bool TrimEnd { get; set; }
+
+        public static SqlSegment ForText(string text, SyntaxNode source) => new(false, text, source);
+        public static SqlSegment ForHole(SyntaxNode source) => new(true, string.Empty, source);
     }
 
     private static void FlattenConcatenation(ExpressionSyntax expression, List<ExpressionSyntax> parts)

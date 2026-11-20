@@ -7,6 +7,29 @@ namespace EfLint.Tests.Performance;
 
 public class MissingAsNoTrackingAnalyzerTests
 {
+    // Extra model with a navigation; names differ from the shared harness model.
+    private const string RelationalModel = """
+        public class PostEntity
+        {
+            public int Id { get; set; }
+            public int BlogId { get; set; }
+        }
+
+        public class BlogWithPosts
+        {
+            public int Id { get; set; }
+            public string Name { get; set; } = string.Empty;
+            public List<PostEntity> Posts { get; set; } = new();
+        }
+
+        public class RelationalContext : DbContext
+        {
+            public DbSet<BlogWithPosts> Blogs => Set<BlogWithPosts>();
+            public DbSet<PostEntity> Posts => Set<PostEntity>();
+        }
+
+        """;
+
     [Fact]
     public async Task ToList_Reports()
     {
@@ -35,29 +58,33 @@ public class MissingAsNoTrackingAnalyzerTests
             """);
     }
 
+    // Corrected: Count() materializes a scalar, never an entity. AsNoTracking() cannot be
+    // applied to the resulting int, so this case must stay silent (review defect 1).
     [Fact]
-    public async Task Count_Reports()
+    public async Task Count_NoDiagnostic()
     {
         await VerifyAsync("""
             public class Sample
             {
                 public void M(BlogContext db)
                 {
-                    var c = db.Blogs.{|EFL1003:Count|}();
+                    var c = db.Blogs.Count();
                 }
             }
             """);
     }
 
+    // Corrected: projecting to string produces IQueryable<string>, not an entity query.
+    // Adding AsNoTracking() there produces CS0452 (review defect 1).
     [Fact]
-    public async Task SelectThenToList_Reports()
+    public async Task SelectThenToList_NoDiagnostic()
     {
         await VerifyAsync("""
             public class Sample
             {
                 public void M(BlogContext db)
                 {
-                    var names = db.Blogs.Select(x => x.Name).{|EFL1003:ToList|}();
+                    var names = db.Blogs.Select(x => x.Name).ToList();
                 }
             }
             """);
@@ -187,6 +214,97 @@ public class MissingAsNoTrackingAnalyzerTests
                 public IQueryable<Blog> M(BlogContext db)
                 {
                     return db.Blogs.Where(x => x.Id > 0);
+                }
+            }
+            """);
+    }
+
+    // Entity-valued identity projection: materialized element is the mapped entity Blog.
+    [Fact]
+    public async Task EntityIdentitySelectThenToList_Reports()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.Select(x => x).{|EFL1003:ToList|}();
+                }
+            }
+            """);
+    }
+
+    // Navigation projection still produces a mapped entity (Post), so the rule applies.
+    [Fact]
+    public async Task NavigationSelectManyThenToList_Reports()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<MissingAsNoTrackingAnalyzer>(RelationalModel + """
+            public class Sample
+            {
+                public void M(RelationalContext db)
+                {
+                    var posts = db.Blogs.SelectMany(b => b.Posts).{|EFL1003:ToList|}();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: b.Posts.Count() projects an int, so ToList() materializes IQueryable<int>.
+    [Fact]
+    public async Task ScalarCountSubqueryProjection_NoDiagnostic()
+    {
+        await EfLintTestResources.VerifyAnalyzerAsync<MissingAsNoTrackingAnalyzer>(RelationalModel + """
+            public class Sample
+            {
+                public void M(RelationalContext db)
+                {
+                    var counts = db.Blogs.Select(b => b.Posts.Count()).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: an anonymous type is not a mapped entity.
+    [Fact]
+    public async Task AnonymousTypeProjection_NoDiagnostic()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var rows = db.Blogs.Select(b => new { b.Id, b.Name }).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: Any() returns bool; there is no entity to stop tracking.
+    [Fact]
+    public async Task Any_NoDiagnostic()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var any = db.Blogs.Any();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: a materializer inside an expression lambda is a subquery, never a
+    // standalone read-only query whose result the enclosing method can inspect.
+    [Fact]
+    public async Task MaterializerInsideExpressionLambda_NoDiagnostic()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M()
+                {
+                    System.Func<BlogContext, List<Blog>> load = db => db.Blogs.ToList();
                 }
             }
             """);

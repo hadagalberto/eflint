@@ -178,6 +178,93 @@ public class EarlyMaterializationCodeFixTests
             """);
     }
 
+    // FixedCode is compiled by the test harness: db.Blogs.Count() is valid EF Core 8.
+    [Fact]
+    public async Task AsEnumerableBeforeCount_MaterializerRemoved()
+    {
+        await VerifyAsync(
+            """
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var count = db.Blogs.{|EFL1001:AsEnumerable|}().Count();
+                }
+            }
+            """,
+            """
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var count = db.Blogs.Count();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: moving ToList to the end must not leave the original terminal ToList
+    // in place, otherwise the result is .Where(...).ToList().ToList().
+    [Fact]
+    public async Task ToListBeforeWhereThenToList_NoDuplicateMaterializer()
+    {
+        await VerifyAsync(
+            """
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.{|EFL1001:ToList|}().Where(b => b.Id > 0).ToList();
+                }
+            }
+            """,
+            """
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.Where(b => b.Id > 0).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: only the translatable Where may move to the server. The client-only
+    // predicate must keep running on List<Blog>, so ToList is inserted before it.
+    [Fact]
+    public async Task ClientOnlyPredicate_MaterializationStaysBeforeIt()
+    {
+        await VerifyAsync(
+            """
+            public static class Helpers
+            {
+                public static bool IsCool(Blog b) => b.Id > 0;
+            }
+
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.{|EFL1001:ToList|}().Where(b => b.Id > 0).Where(b => Helpers.IsCool(b));
+                }
+            }
+            """,
+            """
+            public static class Helpers
+            {
+                public static bool IsCool(Blog b) => b.Id > 0;
+            }
+
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.Where(b => b.Id > 0).ToList().Where(b => Helpers.IsCool(b));
+                }
+            }
+            """);
+    }
+
     private static Task VerifyAsync(string before, string after) =>
         EfLintTestResources.VerifyCodeFixAsync<EarlyMaterializationAnalyzer, EarlyMaterializationCodeFixProvider>(
             before,

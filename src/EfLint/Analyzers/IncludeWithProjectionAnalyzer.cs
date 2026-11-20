@@ -46,7 +46,7 @@ public sealed class IncludeWithProjectionAnalyzer : DiagnosticAnalyzer
         }
 
         var hasThenInclude = false;
-        var hasProjection = false;
+        IInvocationOperation? projection = null;
         IOperation current = invocation;
         while (current.Parent is not null)
         {
@@ -64,12 +64,19 @@ public sealed class IncludeWithProjectionAnalyzer : DiagnosticAnalyzer
             if (QueryChain.IsQueryOperatorNamed(parent.TargetMethod, symbols, "Select")
                 || QueryChain.IsQueryOperatorNamed(parent.TargetMethod, symbols, "SelectMany"))
             {
-                hasProjection = true;
+                projection = parent;
                 break;
             }
         }
 
-        if (!hasProjection)
+        if (projection is null)
+        {
+            return;
+        }
+
+        // A pass-through projection keeps the entity (and therefore the Include) in the
+        // result. Removing the Include would change which navigations are populated.
+        if (ProjectionPreservesEntity(projection))
         {
             return;
         }
@@ -86,6 +93,86 @@ public sealed class IncludeWithProjectionAnalyzer : DiagnosticAnalyzer
             EfLintDiagnostics.IncludeWithProjection,
             GetNameLocation(invocation),
             properties));
+    }
+
+    /// <summary>
+    /// True when the projection lambda yields the included entity itself, either directly or
+    /// inside an anonymous/object initializer. Member accesses such as b.Id do not count.
+    /// </summary>
+    private static bool ProjectionPreservesEntity(IInvocationOperation projection)
+    {
+        foreach (var argument in projection.Arguments)
+        {
+            if (RawSqlHelpers.Unwrap(argument.Value) is IAnonymousFunctionOperation lambda
+                && lambda.Syntax is LambdaExpressionSyntax lambdaSyntax
+                && TryGetParameterName(lambdaSyntax, out var parameterName)
+                && lambdaSyntax.Body is ExpressionSyntax body
+                && ExpressionPreservesEntity(body, parameterName))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetParameterName(LambdaExpressionSyntax lambda, out string name)
+    {
+        switch (lambda)
+        {
+            case SimpleLambdaExpressionSyntax simple:
+                name = simple.Parameter.Identifier.ValueText;
+                return true;
+
+            case ParenthesizedLambdaExpressionSyntax parenthesized when parenthesized.ParameterList.Parameters.Count == 1:
+                name = parenthesized.ParameterList.Parameters[0].Identifier.ValueText;
+                return true;
+
+            default:
+                name = string.Empty;
+                return false;
+        }
+    }
+
+    private static bool ExpressionPreservesEntity(ExpressionSyntax expression, string parameterName)
+    {
+        expression = expression switch
+        {
+            ParenthesizedExpressionSyntax parenthesized => parenthesized.Expression,
+            CastExpressionSyntax cast => cast.Expression,
+            _ => expression,
+        };
+
+        if (expression is IdentifierNameSyntax identifier
+            && identifier.Identifier.ValueText == parameterName)
+        {
+            return true;
+        }
+
+        if (expression is AnonymousObjectCreationExpressionSyntax anonymous)
+        {
+            foreach (var initializer in anonymous.Initializers)
+            {
+                if (ExpressionPreservesEntity(initializer.Expression, parameterName))
+                {
+                    return true;
+                }
+            }
+        }
+
+        if (expression is ObjectCreationExpressionSyntax { Initializer: not null } objectCreation)
+        {
+            foreach (var initializer in objectCreation.Initializer.Expressions)
+            {
+                if (initializer is AssignmentExpressionSyntax assignment
+                    && ExpressionPreservesEntity(assignment.Right, parameterName))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static Location GetNameLocation(IInvocationOperation invocation)

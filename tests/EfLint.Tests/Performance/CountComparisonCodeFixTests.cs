@@ -46,6 +46,57 @@ public class CountComparisonCodeFixTests
             "db.Blogs.Where(b => b.Id > 0).Any()");
     }
 
+    // Hand-derived: keep the await, swap CountAsync for AnyAsync; the fixed code
+    // must compile against real EF Core 8 references.
+    [Fact]
+    public async Task AwaitCountAsyncGreaterThanZero_UsesAnyAsync()
+    {
+        await EfLintTestResources.VerifyCodeFixAsync<CountComparisonAnalyzer, CountComparisonCodeFixProvider>(
+            """
+            public class Sample
+            {
+                public async Task<bool> M(BlogContext db)
+                {
+                    return await db.Blogs.{|EFL1002:CountAsync|}() > 0;
+                }
+            }
+            """,
+            """
+            public class Sample
+            {
+                public async Task<bool> M(BlogContext db)
+                {
+                    return await db.Blogs.AnyAsync();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: the predicate must survive the CountAsync -> AnyAsync rename.
+    [Fact]
+    public async Task AwaitCountAsyncWithPredicate_UsesAnyAsync()
+    {
+        await EfLintTestResources.VerifyCodeFixAsync<CountComparisonAnalyzer, CountComparisonCodeFixProvider>(
+            """
+            public class Sample
+            {
+                public async Task<bool> M(BlogContext db)
+                {
+                    return await db.Blogs.{|EFL1002:CountAsync|}(b => b.Id > 0) > 0;
+                }
+            }
+            """,
+            """
+            public class Sample
+            {
+                public async Task<bool> M(BlogContext db)
+                {
+                    return await db.Blogs.AnyAsync(b => b.Id > 0);
+                }
+            }
+            """);
+    }
+
     [Fact]
     public async Task FixAll_MultipleComparisons_UsesAny()
     {

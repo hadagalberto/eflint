@@ -180,6 +180,57 @@ public class EarlyMaterializationAnalyzerTests
             """);
     }
 
+    // Hand-derived: Count is a query operator too, so AsEnumerable().Count() materializes
+    // the whole table on the client instead of issuing SELECT COUNT(*).
+    [Fact]
+    public async Task AsEnumerableBeforeCount_Reports()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var count = db.Blogs.{|EFL1001:AsEnumerable|}().Count();
+                }
+            }
+            """);
+    }
+
+    [Fact]
+    public async Task ToListBeforeCount_Reports()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var count = db.Blogs.{|EFL1001:ToList|}().Count();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: Helpers.IsCool cannot be translated to SQL. Moving ToList past it would
+    // push client-only logic to the server, so the analyzer must stay silent.
+    [Fact]
+    public async Task ClientOnlyPredicateAfterToList_NoDiagnostic()
+    {
+        await VerifyAsync("""
+            public static class Helpers
+            {
+                public static bool IsCool(Blog b) => b.Id > 0;
+            }
+
+            public class Sample
+            {
+                public void M(BlogContext db)
+                {
+                    var blogs = db.Blogs.ToList().Where(b => Helpers.IsCool(b));
+                }
+            }
+            """);
+    }
+
     private static Task VerifyAsync(string code) =>
         EfLintTestResources.VerifyAnalyzerAsync<EarlyMaterializationAnalyzer>(code);
 }

@@ -204,6 +204,51 @@ public class IncludeWithProjectionAnalyzerTests
             """);
     }
 
+    // Hand-derived: an identity projection keeps the entity (and its Include) in the result.
+    [Fact]
+    public async Task IncludeBeforeIdentitySelect_NoDiagnostic()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BloggingContext db)
+                {
+                    var blogs = db.Blogs.Include(b => b.Posts).Select(b => b).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: the anonymous type carries the entity itself, so Include is preserved.
+    [Fact]
+    public async Task IncludeBeforeAnonymousProjectionContainingEntity_NoDiagnostic()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BloggingContext db)
+                {
+                    var rows = db.Blogs.Include(b => b.Posts).Select(b => new { Blog = b, b.Id }).ToList();
+                }
+            }
+            """);
+    }
+
+    // Hand-derived: projecting only a scalar drops the blog, hence also the Include.
+    [Fact]
+    public async Task IncludeBeforeScalarProjection_Reports()
+    {
+        await VerifyAsync("""
+            public class Sample
+            {
+                public void M(BloggingContext db)
+                {
+                    var counts = db.Blogs.{|EFL2006:Include|}(b => b.Posts).Select(b => b.Posts.Count()).ToList();
+                }
+            }
+            """);
+    }
+
     private static Task VerifyAsync(string code) =>
         EfLintTestResources.VerifyAnalyzerAsync<IncludeWithProjectionAnalyzer>(ModelExtension + code);
 }

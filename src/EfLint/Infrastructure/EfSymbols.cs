@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -13,6 +14,13 @@ namespace EfLint.Infrastructure;
 /// </summary>
 internal sealed class EfSymbols
 {
+    // Roslyn analyzers are instantiated per analyzer, but every analyzer in this
+    // assembly resolves the very same set of EF Core symbols for a given
+    // Compilation. Cache by Compilation identity so the metadata lookups happen
+    // once per compilation instead of once per analyzer. The weak table lets the
+    // cache entry die together with its Compilation.
+    private static readonly ConditionalWeakTable<Compilation, EfSymbols> Cache = new();
+
     private EfSymbols(
         INamedTypeSymbol? dbContext,
         INamedTypeSymbol? dbSet,
@@ -97,7 +105,17 @@ internal sealed class EfSymbols
         && EntityFrameworkServiceCollectionExtensions is not null
         && ServiceCollectionServiceExtensions is not null;
 
+    /// <summary>
+    /// Returns the symbol cache for <paramref name="compilation"/>. Shared by every
+    /// analyzer registered for the same compilation; EF Core symbol resolution is
+    /// therefore paid at most once per compilation.
+    /// </summary>
     public static EfSymbols Create(Compilation compilation)
+    {
+        return Cache.GetValue(compilation, static value => CreateCore(value));
+    }
+
+    private static EfSymbols CreateCore(Compilation compilation)
     {
         return new EfSymbols(
             dbContext: compilation.GetTypeByMetadataName("Microsoft.EntityFrameworkCore.DbContext"),

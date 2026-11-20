@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
@@ -15,6 +17,11 @@ namespace EfLint.Infrastructure;
 internal static class QueryChain
 {
     private const int MaxChainDepth = 64;
+
+    // Semantic models are immutable per compilation. Factories declared in other
+    // syntax trees used to call Compilation.GetSemanticModel(tree) on every visit;
+    // cache per compilation instead (no allocation on the common single-tree path).
+    private static readonly ConditionalWeakTable<Compilation, ConcurrentDictionary<SyntaxTree, SemanticModel>> ModelCache = new();
 
     private static readonly HashSet<string> QueryOperatorNames = new()
     {
@@ -76,8 +83,21 @@ internal static class QueryChain
                     {
                         // A source-declared factory is an EF query only when every returned
                         // expression is itself proven to originate from a DbContext.
-                        return returns.Count > 0 && returns.All(value =>
-                            IsEfQuery(value, symbols, value.SemanticModel ?? model, visitedMethods));
+                        // Explicit loop avoids a captured lambda allocation in this hot path.
+                        if (returns.Count == 0)
+                        {
+                            return false;
+                        }
+
+                        foreach (var value in returns)
+                        {
+                            if (!IsEfQuery(value, symbols, value.SemanticModel ?? model, visitedMethods))
+                            {
+                                return false;
+                            }
+                        }
+
+                        return true;
                     }
 
                     var target = invocation.TargetMethod;
@@ -92,13 +112,13 @@ internal static class QueryChain
                         continue;
                     }
 
-                    var source = invocation.Arguments.FirstOrDefault(argument => symbols.IsQueryableType(argument.Parameter?.Type));
+                    var source = FindQueryableArgument(invocation, symbols);
                     if (source is null)
                     {
                         return false;
                     }
 
-                    current = RawSqlHelpers.Unwrap(source.Value);
+                    current = RawSqlHelpers.Unwrap(source);
                     continue;
 
                 case IMemberReferenceOperation member:
@@ -162,8 +182,7 @@ internal static class QueryChain
             var parent = current.Parent;
             if (parent is IInvocationOperation invocation
                 && IsMaterializer(invocation.TargetMethod, symbols)
-                && (ReferenceEquals(invocation.Instance, current)
-                    || invocation.Arguments.Any(argument => ReferenceEquals(argument.Value, current))))
+                && IsArgument(invocation, current))
             {
                 return invocation;
             }
@@ -249,13 +268,13 @@ internal static class QueryChain
                         continue;
                     }
 
-                    var source = currentInvocation.Arguments.FirstOrDefault(argument => symbols.IsQueryableType(argument.Parameter?.Type));
+                    var source = FindQueryableArgument(currentInvocation, symbols);
                     if (source is null)
                     {
                         return null;
                     }
 
-                    current = RawSqlHelpers.Unwrap(source.Value);
+                    current = RawSqlHelpers.Unwrap(source);
                     continue;
 
                 case IMemberReferenceOperation currentMember:
@@ -289,6 +308,24 @@ internal static class QueryChain
         return null;
     }
 
+    private static bool IsArgument(IInvocationOperation invocation, IOperation value)
+    {
+        if (ReferenceEquals(invocation.Instance, value))
+        {
+            return true;
+        }
+
+        foreach (var argument in invocation.Arguments)
+        {
+            if (ReferenceEquals(argument.Value, value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>True when the invocation is a LINQ/EF query operator with the given name.</summary>
     public static bool IsQueryOperatorNamed(IMethodSymbol method, EfSymbols symbols, string name)
     {
@@ -299,6 +336,23 @@ internal static class QueryChain
     public static bool IsLambda(IArgumentOperation? argument)
     {
         return argument is not null && RawSqlHelpers.Unwrap(argument.Value) is IAnonymousFunctionOperation;
+    }
+
+    /// <summary>
+    /// Returns the first queryable argument of an invocation without allocating a
+    /// capturing predicate (this is on the hot path of every query-chain walk).
+    /// </summary>
+    private static IOperation? FindQueryableArgument(IInvocationOperation invocation, EfSymbols symbols)
+    {
+        foreach (var argument in invocation.Arguments)
+        {
+            if (symbols.IsQueryableType(argument.Parameter?.Type))
+            {
+                return argument.Value;
+            }
+        }
+
+        return null;
     }
 
     private static IOperation ApplySubstitutions(
@@ -413,16 +467,31 @@ internal static class QueryChain
 
     private static SemanticModel? GetModelForSyntaxTree(SyntaxTree tree, SemanticModel? model, SemanticModel? fallback)
     {
-        if (model is not null)
+        if (model is not null && ReferenceEquals(model.SyntaxTree, tree))
         {
-            return ReferenceEquals(model.SyntaxTree, tree)
-                ? model
-                : model.Compilation.GetSemanticModel(tree);
+            return model;
         }
 
-        return fallback is not null
-            ? (ReferenceEquals(fallback.SyntaxTree, tree) ? fallback : fallback.Compilation.GetSemanticModel(tree))
-            : null;
+        if (fallback is not null && ReferenceEquals(fallback.SyntaxTree, tree))
+        {
+            return fallback;
+        }
+
+        var compilation = model?.Compilation ?? fallback?.Compilation;
+        if (compilation is null)
+        {
+            return null;
+        }
+
+        var cache = ModelCache.GetValue(
+            compilation,
+            static _ => new ConcurrentDictionary<SyntaxTree, SemanticModel>());
+        if (cache.TryGetValue(tree, out var cached))
+        {
+            return cached;
+        }
+
+        return cache.GetOrAdd(tree, compilation.GetSemanticModel(tree));
     }
 
     private static HashSet<IMethodSymbol> NewVisitedMethods() =>
