@@ -31,3 +31,11 @@ end-of-line style: never emit a hard-coded `\n` or `\r\n`. The shared verificati
 `tests/EfLint.Tests/TestInfrastructure/EfLintTestResources.cs` run every code-fix test against
 both LF and CRLF sources — use those helpers instead of constructing `CSharpCodeFixTest`
 directly, so a fix that breaks one line-ending style is caught on any platform.
+
+## Sample project
+
+`samples/EfLint.Sample` must keep triggering every rule. It is intentionally left out of the
+solution's `Build.0` entries: the solution builds with warnings-as-errors, while the sample must
+keep producing its diagnostics. `SampleIntegrationTests` builds the project directly and asserts
+the exact diagnostic list. When adding a rule, add a violating method to the sample and extend
+that list.

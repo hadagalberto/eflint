@@ -1,0 +1,26 @@
+# The sample intentionally violates every EfLint rule. Normalize every diagnostic to
+# "warning" so the integration test sees the complete, deterministic set in the build
+# log regardless of each rule's default severity (some default to "info").
+root = true
+
+[Program.cs]
+dotnet_diagnostic.EFL1001.severity = warning
+dotnet_diagnostic.EFL1002.severity = warning
+dotnet_diagnostic.EFL1003.severity = warning
+dotnet_diagnostic.EFL1004.severity = warning
+dotnet_diagnostic.EFL1005.severity = warning
+dotnet_diagnostic.EFL1006.severity = warning
+dotnet_diagnostic.EFL1007.severity = warning
+dotnet_diagnostic.EFL1008.severity = warning
+dotnet_diagnostic.EFL1009.severity = warning
+dotnet_diagnostic.EFL1010.severity = warning
+dotnet_diagnostic.EFL2001.severity = warning
+dotnet_diagnostic.EFL2002.severity = warning
+dotnet_diagnostic.EFL2003.severity = warning
+dotnet_diagnostic.EFL2004.severity = warning
+dotnet_diagnostic.EFL2005.severity = warning
+dotnet_diagnostic.EFL2006.severity = warning
+dotnet_diagnostic.EFL2007.severity = warning
+dotnet_diagnostic.EFL2008.severity = warning
+dotnet_diagnostic.EFL3001.severity = warning
+dotnet_diagnostic.EFL3002.severity = warning

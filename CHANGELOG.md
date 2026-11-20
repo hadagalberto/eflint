@@ -25,3 +25,7 @@ All notable changes to this project are documented in this file.
 - EFL2008 — redundant Update/Attach on an entity tracked by the same context.
 - Analyzer tests with real EF Core reference assemblies, code-fix and Fix All tests,
   sample integration test, package layout test and a 2,000-method performance test.
+- Sample project now triggers all 20 rules; the integration test asserts the exact
+  21-diagnostic set (all rules normalized to `warning` in the sample's `.editorconfig`).
+  The sample is excluded from the solution build configuration so `dotnet build -warnaserror`
+  stays clean while the integration test still builds it and sees its diagnostics.

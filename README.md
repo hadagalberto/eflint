@@ -66,8 +66,9 @@ dotnet test EfLint.sln
 dotnet pack src/EfLint.Package/EfLint.Package.csproj -c Release
 ```
 
-`samples/EfLint.Sample` intentionally violates the implemented rules and is excluded from
-warnings-as-errors; the integration test builds it and asserts the exact diagnostic set.
+`samples/EfLint.Sample` intentionally violates every rule above. It is excluded from the
+solution build configuration so `dotnet build -warnaserror` stays clean; the integration test
+builds it separately and asserts the exact diagnostic set.
 
 ## License
 

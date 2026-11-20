@@ -26,10 +26,11 @@ jobs:
       - name: Restore
         run: dotnet restore EfLint.sln
 
-      # Directory.Build.props enables warnings-as-errors for all projects except the
-      # intentionally violating sample.
+      # Directory.Build.props enables warnings-as-errors for all projects. The sample
+      # is deliberately excluded from the solution build configuration because it must
+      # emit diagnostics; SampleIntegrationTests builds it separately without -warnaserror.
       - name: Build (warnings as errors)
-        run: dotnet build EfLint.sln --no-restore
+        run: dotnet build EfLint.sln --no-restore -warnaserror
 
       - name: Test
         run: dotnet test EfLint.sln --no-build --nologo

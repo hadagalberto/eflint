@@ -39,7 +39,15 @@ public class SampleIntegrationTests
             .Select(line => DiagnosticLine.Match(line).Groups[1].Value)
             .OrderBy(id => id, StringComparer.Ordinal)
             .ToArray();
-        var expected = new[] { "EFL3001", "EFL3001", "EFL3002" };
+        // One violation for each of the 20 rules, plus a second EFL3001 case.
+        var expected = new[]
+        {
+            "EFL1001", "EFL1002", "EFL1003", "EFL1004", "EFL1005",
+            "EFL1006", "EFL1007", "EFL1008", "EFL1009", "EFL1010",
+            "EFL2001", "EFL2002", "EFL2003", "EFL2004", "EFL2005",
+            "EFL2006", "EFL2007", "EFL2008",
+            "EFL3001", "EFL3001", "EFL3002",
+        };
 
         Assert.Equal(expected, actual);
     }
