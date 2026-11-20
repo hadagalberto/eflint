@@ -119,12 +119,32 @@ public sealed class RawSqlToFormattableStringCodeFixProvider : CodeFixProvider
         SyntaxNode newRoot = root.ReplaceNode(currentInvocation, result);
         if (newRoot is CompilationUnitSyntax compilationUnit && !HasEntityFrameworkCoreUsing(compilationUnit))
         {
-            newRoot = compilationUnit.AddUsings(
-                SyntaxFactory.UsingDirective(SyntaxFactory.ParseName(EntityFrameworkCoreNamespace))
-                    .WithTrailingTrivia(SyntaxFactory.ElasticLineFeed));
+            // ElasticLineFeed always materialises as LF, which corrupts documents that use
+            // CRLF. Read the newline actually used by the document (falling back to the
+            // workspace formatting option) so the inserted using preserves its EOL style.
+            var newLine = GetDocumentNewLine(document, root);
+            var usingDirective = SyntaxFactory.UsingDirective(SyntaxFactory.ParseName(EntityFrameworkCoreNamespace))
+                .WithTrailingTrivia(SyntaxFactory.EndOfLine(newLine));
+            newRoot = compilationUnit.AddUsings(usingDirective);
         }
 
         return document.WithSyntaxRoot(newRoot);
+    }
+
+    private static string GetDocumentNewLine(Document document, SyntaxNode root)
+    {
+        foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+        {
+            if (trivia.IsKind(SyntaxKind.EndOfLineTrivia))
+            {
+                return trivia.ToString();
+            }
+        }
+
+        // No line break anywhere in the document: defer to the workspace formatting option.
+        return document.Project.Solution.Options
+            .GetOption(Microsoft.CodeAnalysis.Formatting.FormattingOptions.NewLine, LanguageNames.CSharp)
+            ?? "\n";
     }
 
     private static ArgumentSyntax? FindSqlArgument(InvocationExpressionSyntax invocation, TextSpan span)

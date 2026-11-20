@@ -1,0 +1,21 @@
+# Normalize line endings in the repository and check sources out as LF on every
+# platform. This keeps Roslyn code-fix snapshots byte-identical on Windows and
+# Linux (a CRLF/LF mismatch otherwise breaks source-text comparisons).
+* text=auto eol=lf
+
+# C# sources get language-aware diffs.
+*.cs diff=csharp
+
+# Binary artifacts must never be normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.snk binary
+*.nupkg binary
+*.zip binary

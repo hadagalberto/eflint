@@ -9,6 +9,10 @@ All notable changes to this project are documented in this file.
 - Solution scaffold: analyzers, code fixes, NuGet package, tests, sample, CI and docs.
 - Shared infrastructure: EF Core symbol cache via `RegisterCompilationStartAction`,
   `IOperation` query-chain helpers and `.editorconfig` option reader.
+- Performance rules EFL1001–EFL1010 with code fixes for EFL1001, EFL1002, EFL1003,
+  EFL1007 and EFL1010, each covered by positive, negative and Fix All tests.
+- Code fixes now preserve the document's end-of-line style; all code-fix tests run against
+  both LF and CRLF sources and `.gitattributes` normalizes source line endings.
 - EFL3001 — raw SQL built from dynamic values, with a FormattableString code fix.
 - EFL3002 — interpolated SQL flattened into a `string` local.
 - EFL2001 — synchronous EF operation in an async method, with an async/await code fix.

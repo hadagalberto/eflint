@@ -16,6 +16,16 @@ dotnet add package EfLint
 
 | ID | Categoria | Descrição | Correção | Documentação |
 | --- | --- | --- | --- | --- |
+| EFL1001 | Performance | Consulta materializada antes de filtro ou projeção | ✅ | [EFL1001](docs/rules/EFL1001.md) |
+| EFL1002 | Performance | `Count()` comparado com zero/um em vez de `Any()` | ✅ | [EFL1002](docs/rules/EFL1002.md) |
+| EFL1003 | Performance | Consulta somente leitura sem `AsNoTracking()` | ✅ | [EFL1003](docs/rules/EFL1003.md) |
+| EFL1004 | Performance | Possível padrão N+1 em loop | — | [EFL1004](docs/rules/EFL1004.md) |
+| EFL1005 | Performance | `First`/`FirstOrDefault` sem `OrderBy` | — | [EFL1005](docs/rules/EFL1005.md) |
+| EFL1006 | Performance | `Skip`/`Take` sem `OrderBy` | — | [EFL1006](docs/rules/EFL1006.md) |
+| EFL1007 | Performance | `SaveChanges` dentro de loop | ✅ | [EFL1007](docs/rules/EFL1007.md) |
+| EFL1008 | Performance | Entidade carregada apenas para excluir ou atualizar | — | [EFL1008](docs/rules/EFL1008.md) |
+| EFL1009 | Performance | Coleção grande em memória usada com `Contains` em consulta | — | [EFL1009](docs/rules/EFL1009.md) |
+| EFL1010 | Performance | Múltiplos `Include`s de coleção sem `AsSplitQuery()` | ✅ | [EFL1010](docs/rules/EFL1010.md) |
 | EFL2001 | Correção | Operação síncrona do EF dentro de um método `async` | ✅ | [EFL2001](docs/rules/EFL2001.md) |
 | EFL2002 | Correção | Operação assíncrona do EF ignora um `CancellationToken` disponível | ✅ | [EFL2002](docs/rules/EFL2002.md) |
 | EFL2003 | Correção | Método de usuário não traduzível em lambda de consulta EF | — | [EFL2003](docs/rules/EFL2003.md) |
@@ -26,8 +36,6 @@ dotnet add package EfLint
 | EFL2008 | Correção | `Update`/`Attach` redundante em entidade já rastreada | — | [EFL2008](docs/rules/EFL2008.md) |
 | EFL3001 | Segurança | SQL bruto construído com interpolação ou concatenação de valores não constantes (injeção de SQL) | ✅ | [EFL3001](docs/rules/EFL3001.md) |
 | EFL3002 | Segurança | SQL interpolado achatado em `string` antes de chegar a uma API de SQL bruto | — | [EFL3002](docs/rules/EFL3002.md) |
-
-As regras EFL1xxx (performance) estão previstas para um marco futuro.
 
 O EfLint resolve os tipos do EF Core por símbolo. Se o EF Core não estiver referenciado, os
 analisadores não fazem nada.

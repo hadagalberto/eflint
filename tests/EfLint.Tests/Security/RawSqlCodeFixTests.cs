@@ -2,8 +2,6 @@ using System.Threading.Tasks;
 using EfLint.Analyzers;
 using EfLint.CodeFixes.Security;
 using EfLint.Tests.TestInfrastructure;
-using Microsoft.CodeAnalysis.CSharp.Testing;
-using Microsoft.CodeAnalysis.Testing;
 using Xunit;
 
 namespace EfLint.Tests.Security;
@@ -154,14 +152,8 @@ public class RawSqlCodeFixTests
             }
             """;
 
-        var test = new CSharpCodeFixTest<RawSqlInjectionAnalyzer, RawSqlToFormattableStringCodeFixProvider, DefaultVerifier>
-        {
-            ReferenceAssemblies = EfLintTestResources.EfCore,
-            TestCode = before,
-            FixedCode = after,
-        };
-
-        await test.RunAsync();
+        await EfLintTestResources.VerifyCodeFixRawAsync<RawSqlInjectionAnalyzer, RawSqlToFormattableStringCodeFixProvider>(
+            before, after);
     }
 
     [Fact]
@@ -189,31 +181,11 @@ public class RawSqlCodeFixTests
             }
             """;
 
-        var test = new CSharpCodeFixTest<RawSqlInjectionAnalyzer, RawSqlToFormattableStringCodeFixProvider, DefaultVerifier>
-        {
-            ReferenceAssemblies = EfLintTestResources.EfCore,
-            TestCode = EfLintTestResources.WithModel(before),
-            FixedCode = EfLintTestResources.WithModel(after),
-            BatchFixedCode = EfLintTestResources.WithModel(after),
-            CodeActionValidationMode = CodeActionValidationMode.None,
-            NumberOfFixAllIterations = 1,
-            NumberOfFixAllInDocumentIterations = 1,
-            NumberOfFixAllInProjectIterations = 1,
-            NumberOfIncrementalIterations = 2,
-        };
-
-        await test.RunAsync();
+        await EfLintTestResources.VerifyFixAllAsync<RawSqlInjectionAnalyzer, RawSqlToFormattableStringCodeFixProvider>(
+            before, after);
     }
 
-    private static Task VerifyAsync(string before, string after)
-    {
-        var test = new CSharpCodeFixTest<RawSqlInjectionAnalyzer, RawSqlToFormattableStringCodeFixProvider, DefaultVerifier>
-        {
-            ReferenceAssemblies = EfLintTestResources.EfCore,
-            TestCode = EfLintTestResources.WithModel(before),
-            FixedCode = EfLintTestResources.WithModel(after),
-        };
-
-        return test.RunAsync();
-    }
+    private static Task VerifyAsync(string before, string after) =>
+        EfLintTestResources.VerifyCodeFixAsync<RawSqlInjectionAnalyzer, RawSqlToFormattableStringCodeFixProvider>(
+            before, after);
 }

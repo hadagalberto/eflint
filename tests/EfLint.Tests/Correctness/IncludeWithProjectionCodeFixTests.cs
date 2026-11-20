@@ -151,11 +151,8 @@ public class IncludeWithProjectionCodeFixTests
     [Fact]
     public async Task FixAll_MultipleIncludes_Removed()
     {
-        var test = new Microsoft.CodeAnalysis.CSharp.Testing.CSharpCodeFixTest<
-            IncludeWithProjectionAnalyzer, IncludeWithProjectionCodeFixProvider, Microsoft.CodeAnalysis.Testing.DefaultVerifier>
-        {
-            ReferenceAssemblies = EfLintTestResources.EfCore,
-            TestCode = EfLintTestResources.WithModel(ModelExtension + """
+        await EfLintTestResources.VerifyFixAllAsync<IncludeWithProjectionAnalyzer, IncludeWithProjectionCodeFixProvider>(
+            ModelExtension + """
                 public class Sample
                 {
                     public void M(BloggingContext db)
@@ -164,8 +161,8 @@ public class IncludeWithProjectionCodeFixTests
                         var c = db.Blogs.{|EFL2006:Include|}(b => b.Posts).Select(b => b.Id).ToList();
                     }
                 }
-                """),
-            FixedCode = EfLintTestResources.WithModel(ModelExtension + """
+                """,
+            ModelExtension + """
                 public class Sample
                 {
                     public void M(BloggingContext db)
@@ -174,25 +171,7 @@ public class IncludeWithProjectionCodeFixTests
                         var c = db.Blogs.Select(b => b.Id).ToList();
                     }
                 }
-                """),
-            BatchFixedCode = EfLintTestResources.WithModel(ModelExtension + """
-                public class Sample
-                {
-                    public void M(BloggingContext db)
-                    {
-                        var a = db.Blogs.Select(b => b.Id).ToList();
-                        var c = db.Blogs.Select(b => b.Id).ToList();
-                    }
-                }
-                """),
-            CodeActionValidationMode = Microsoft.CodeAnalysis.Testing.CodeActionValidationMode.None,
-            NumberOfFixAllIterations = 1,
-            NumberOfFixAllInDocumentIterations = 1,
-            NumberOfFixAllInProjectIterations = 1,
-            NumberOfIncrementalIterations = 2,
-        };
-
-        await test.RunAsync();
+                """);
     }
 
     private static Task VerifyAsync(string before, string after) =>

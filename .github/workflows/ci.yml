@@ -8,7 +8,13 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    # Source files are checked out as LF on both platforms (.gitattributes), and every
+    # code-fix snapshot is verified with LF and CRLF input, so both jobs must agree.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 

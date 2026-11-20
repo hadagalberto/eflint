@@ -23,3 +23,11 @@
 
 No stubs, TODOs, `NotImplementedException` or skipped tests. Never weaken a test to make a
 build green — fix the root cause. Do not push or publish; commits stay local.
+
+## Line endings
+
+Sources are normalized to LF by `.gitattributes`. Code fixes must preserve the document's own
+end-of-line style: never emit a hard-coded `\n` or `\r\n`. The shared verification helpers in
+`tests/EfLint.Tests/TestInfrastructure/EfLintTestResources.cs` run every code-fix test against
+both LF and CRLF sources — use those helpers instead of constructing `CSharpCodeFixTest`
+directly, so a fix that breaks one line-ending style is caught on any platform.
