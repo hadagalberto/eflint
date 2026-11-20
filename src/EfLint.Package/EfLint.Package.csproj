@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <IsPackable>true</IsPackable>
+    <NoBuild>false</NoBuild>
+    <PackageId>EfLint</PackageId>
+    <Version>0.1.0</Version>
+    <Title>EfLint — EF Core Roslyn analyzers</Title>
+    <Description>Roslyn analyzers and code fixes that catch EF Core performance, correctness and security pitfalls at compile time.</Description>
+    <PackageTags>efcore;entityframeworkcore;analyzer;roslyn;codefix;security;performance</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <RepositoryUrl>https://github.com/hadagalberto/eflint</RepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../EfLint/EfLint.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="../EfLint.CodeFixes/EfLint.CodeFixes.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="build/EfLint.props" Pack="true" PackagePath="build/EfLint.props" />
+    <None Include="README.md" Pack="true" PackagePath="README.md" />
+    <None Include="../EfLint/bin/$(Configuration)/netstandard2.0/EfLint.dll" Pack="true" PackagePath="analyzers/dotnet/cs/EfLint.dll" Visible="false" />
+    <None Include="../EfLint.CodeFixes/bin/$(Configuration)/netstandard2.0/EfLint.CodeFixes.dll" Pack="true" PackagePath="analyzers/dotnet/cs/EfLint.CodeFixes.dll" Visible="false" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,12 @@
+<Project>
+
+  <!-- Imported automatically when the EfLint analyzer package is installed. -->
+  <PropertyGroup>
+    <EfLintEnabled Condition="'$(EfLintEnabled)' == ''">true</EfLintEnabled>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(EfLintEnabled)' == 'true'">
+    <DefineConstants>$(DefineConstants);EFLINT_ENABLED</DefineConstants>
+  </PropertyGroup>
+
+</Project>

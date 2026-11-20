@@ -1,0 +1,17 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <MSBuildTreatWarningsAsErrors>true</MSBuildTreatWarningsAsErrors>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <Company>Hadagalberto Junior</Company>
+    <Authors>Hadagalberto Junior</Authors>
+    <Copyright>Copyright (c) Hadagalberto Junior</Copyright>
+  </PropertyGroup>
+
+</Project>
