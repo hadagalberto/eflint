@@ -8,8 +8,10 @@
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <MSBuildTreatWarningsAsErrors>false</MSBuildTreatWarningsAsErrors>
     <NoWarn>$(NoWarn);CS8618;CS0169;EF1002</NoWarn>
-    <!-- Command-line -warnaserror is a global property; keep intentional sample diagnostics as warnings. -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);EFL3001;EFL3002</WarningsNotAsErrors>
+    <!-- Command-line -warnaserror is a global property; keep every intentional EFL
+         diagnostic as a warning. SampleWarningConfigurationTests generates this list from
+         EfLintDiagnostics descriptors and fails when a new rule is not listed here. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);EFL1001;EFL1002;EFL1003;EFL1004;EFL1005;EFL1006;EFL1007;EFL1008;EFL1009;EFL1010;EFL2001;EFL2002;EFL2003;EFL2004;EFL2005;EFL2006;EFL2007;EFL2008;EFL3001;EFL3002</WarningsNotAsErrors>
   </PropertyGroup>
 
   <ItemGroup>

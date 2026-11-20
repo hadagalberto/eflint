@@ -61,14 +61,17 @@ eflint.provider = postgres   # postgres | sqlserver | sqlite
 Requires the .NET 8 SDK (pinned by `global.json`).
 
 ```shell
-dotnet build EfLint.sln
-dotnet test EfLint.sln
+dotnet build -warnaserror
+dotnet test
 dotnet pack src/EfLint.Package/EfLint.Package.csproj -c Release
 ```
 
 `samples/EfLint.Sample` intentionally violates every rule above. It is excluded from the
-solution build configuration so `dotnet build -warnaserror` stays clean; the integration test
-builds it separately and asserts the exact diagnostic set.
+solution build configuration and its `WarningsNotAsErrors` list demotes every EFL id to a
+warning, so `dotnet build -warnaserror` stays clean even when the sample is built directly.
+The list is checked against the diagnostic descriptors by
+`SampleWarningConfigurationTests`; the integration test also builds the sample with and
+without `-warnaserror` and asserts the exact diagnostic set in both modes.
 
 ## License
 

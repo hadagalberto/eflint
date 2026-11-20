@@ -29,3 +29,7 @@ All notable changes to this project are documented in this file.
   21-diagnostic set (all rules normalized to `warning` in the sample's `.editorconfig`).
   The sample is excluded from the solution build configuration so `dotnet build -warnaserror`
   stays clean while the integration test still builds it and sees its diagnostics.
+- Maintainer fix pass: sample demotes every descriptor id via `WarningsNotAsErrors` (guard
+  test generates the list from `EfLintDiagnostics`), integration test covers `-warnaserror`,
+  CI runs `dotnet build -warnaserror` at the root, and code-fix line-ending coverage is
+  verified by an automated guard.

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -14,22 +15,27 @@ public class SampleIntegrationTests
         @"Program\.cs\(\d+,\d+\):\s+warning\s+(EFL\d{4})\s*:",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    [Fact]
-    public async Task SampleBuild_ProducesExactlyTheExpectedDiagnostics()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SampleBuild_ProducesExactlyTheExpectedDiagnostics(bool warningsAsErrors)
     {
         var repositoryRoot = DotNetRunner.FindRepositoryRoot();
         var project = Path.Combine(repositoryRoot, "samples", "EfLint.Sample", "EfLint.Sample.csproj");
         Assert.True(File.Exists(project), $"Sample project not found at {project}");
 
-        var (exitCode, output) = await DotNetRunner.RunAsync(
-            repositoryRoot,
-            "build",
-            project,
-            "--nologo",
-            "-v:m",
-            "-t:Rebuild");
+        var arguments = new List<string> { "build", project, "--nologo", "-v:m", "-t:Rebuild" };
+        if (warningsAsErrors)
+        {
+            arguments.Add("-warnaserror");
+        }
+
+        var (exitCode, output) = await DotNetRunner.RunAsync(repositoryRoot, arguments.ToArray());
 
         Assert.True(exitCode == 0, $"Sample build failed:\n{output}");
+        Assert.False(
+            output.Contains("error EFL", StringComparison.OrdinalIgnoreCase),
+            $"Intentional sample diagnostics must stay warnings, even with -warnaserror:\n{output}");
 
         // MSBuild repeats each compiler diagnostic when a project is rebuilt; compare the
         // distinct source diagnostics rather than duplicated log lines.

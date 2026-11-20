@@ -14,48 +14,54 @@ public class PackageTests
     public async Task Pack_ProducesAnalyzerPackageWithExpectedLayout()
     {
         var repositoryRoot = DotNetRunner.FindRepositoryRoot();
-        var outputDirectory = Path.Combine(repositoryRoot, "artifacts", "packtest");
+
+        // Use a fresh workspace outside the repository so the test never leaves temporary
+        // packages or consumer projects behind in the working tree.
+        var workspace = Path.Combine(Path.GetTempPath(), "eflint-package-tests-" + Guid.NewGuid().ToString("N"));
+        var outputDirectory = Path.Combine(workspace, "packages");
         Directory.CreateDirectory(outputDirectory);
 
-        foreach (var stalePackage in Directory.GetFiles(outputDirectory, "*.nupkg"))
+        try
         {
-            File.Delete(stalePackage);
+            var (exitCode, output) = await DotNetRunner.RunAsync(
+                repositoryRoot,
+                "pack",
+                "src/EfLint.Package/EfLint.Package.csproj",
+                "-c",
+                "Release",
+                "-o",
+                outputDirectory,
+                "--nologo",
+                "-v:m");
+
+            Assert.True(exitCode == 0, $"dotnet pack failed:\n{output}");
+
+            var packagePath = Directory.GetFiles(outputDirectory, "*.nupkg").Single();
+            using (var archive = ZipFile.OpenRead(packagePath))
+            {
+                var entries = archive.Entries.Select(entry => entry.FullName).ToHashSet(StringComparer.Ordinal);
+
+                Assert.Contains("analyzers/dotnet/cs/EfLint.dll", entries);
+                Assert.Contains("analyzers/dotnet/cs/EfLint.CodeFixes.dll", entries);
+                Assert.Contains("build/EfLint.props", entries);
+                Assert.Contains("README.md", entries);
+                Assert.Contains("EfLint.nuspec", entries);
+            }
+
+            await AssertPackageCanBeConsumedAsync(workspace, outputDirectory);
         }
-
-        var (exitCode, output) = await DotNetRunner.RunAsync(
-            repositoryRoot,
-            "pack",
-            "src/EfLint.Package/EfLint.Package.csproj",
-            "-c",
-            "Release",
-            "-o",
-            outputDirectory,
-            "--nologo",
-            "-v:m");
-
-        Assert.True(exitCode == 0, $"dotnet pack failed:\n{output}");
-
-        var packagePath = Directory.GetFiles(outputDirectory, "*.nupkg").Single();
-        using var archive = ZipFile.OpenRead(packagePath);
-        var entries = archive.Entries.Select(entry => entry.FullName).ToHashSet(StringComparer.Ordinal);
-
-        Assert.Contains("analyzers/dotnet/cs/EfLint.dll", entries);
-        Assert.Contains("analyzers/dotnet/cs/EfLint.CodeFixes.dll", entries);
-        Assert.Contains("build/EfLint.props", entries);
-        Assert.Contains("README.md", entries);
-        Assert.Contains("EfLint.nuspec", entries);
-
-        await AssertPackageCanBeConsumedAsync(repositoryRoot, outputDirectory);
+        finally
+        {
+            if (Directory.Exists(workspace))
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+        }
     }
 
-    private static async Task AssertPackageCanBeConsumedAsync(string repositoryRoot, string packageDirectory)
+    private static async Task AssertPackageCanBeConsumedAsync(string workspace, string packageDirectory)
     {
-        var consumerDirectory = Path.Combine(repositoryRoot, "artifacts", "consumetest");
-        if (Directory.Exists(consumerDirectory))
-        {
-            Directory.Delete(consumerDirectory, recursive: true);
-        }
-
+        var consumerDirectory = Path.Combine(workspace, "consumer");
         Directory.CreateDirectory(consumerDirectory);
 
         await File.WriteAllTextAsync(

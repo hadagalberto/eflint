@@ -17,8 +17,8 @@
 6. Run:
 
    ```shell
-   dotnet build EfLint.sln
-   dotnet test EfLint.sln
+   dotnet build -warnaserror
+   dotnet test
    ```
 
 No stubs, TODOs, `NotImplementedException` or skipped tests. Never weaken a test to make a
@@ -35,7 +35,9 @@ directly, so a fix that breaks one line-ending style is caught on any platform.
 ## Sample project
 
 `samples/EfLint.Sample` must keep triggering every rule. It is intentionally left out of the
-solution's `Build.0` entries: the solution builds with warnings-as-errors, while the sample must
-keep producing its diagnostics. `SampleIntegrationTests` builds the project directly and asserts
-the exact diagnostic list. When adding a rule, add a violating method to the sample and extend
-that list.
+solution's `Build.0` entries and lists every EFL id in `WarningsNotAsErrors` so a direct
+`-warnaserror` build keeps its diagnostics as warnings. `SampleWarningConfigurationTests`
+generates the expected list from `EfLintDiagnostics` descriptors and fails when a new rule is
+missing from the project file. `SampleIntegrationTests` builds the sample with and without
+`-warnaserror` and asserts the exact diagnostic list. When adding a rule, add a violating method
+to the sample and extend that list.
