@@ -16,10 +16,18 @@ dotnet add package EfLint
 
 | ID | Categoria | Descrição | Correção | Documentação |
 | --- | --- | --- | --- | --- |
+| EFL2001 | Correção | Operação síncrona do EF dentro de um método `async` | ✅ | [EFL2001](docs/rules/EFL2001.md) |
+| EFL2002 | Correção | Operação assíncrona do EF ignora um `CancellationToken` disponível | ✅ | [EFL2002](docs/rules/EFL2002.md) |
+| EFL2003 | Correção | Método de usuário não traduzível em lambda de consulta EF | — | [EFL2003](docs/rules/EFL2003.md) |
+| EFL2004 | Correção | `DbContext` capturado por lambda `Parallel`/`Task.WhenAll` | — | [EFL2004](docs/rules/EFL2004.md) |
+| EFL2005 | Correção | `DbContext` registrado como singleton | — | [EFL2005](docs/rules/EFL2005.md) |
+| EFL2006 | Correção | `Include` ignorado após projeção com `Select` | ✅ | [EFL2006](docs/rules/EFL2006.md) |
+| EFL2007 | Correção | Comparação de strings não sargável em consulta EF | — | [EFL2007](docs/rules/EFL2007.md) |
+| EFL2008 | Correção | `Update`/`Attach` redundante em entidade já rastreada | — | [EFL2008](docs/rules/EFL2008.md) |
 | EFL3001 | Segurança | SQL bruto construído com interpolação ou concatenação de valores não constantes (injeção de SQL) | ✅ | [EFL3001](docs/rules/EFL3001.md) |
 | EFL3002 | Segurança | SQL interpolado achatado em `string` antes de chegar a uma API de SQL bruto | — | [EFL3002](docs/rules/EFL3002.md) |
 
-As regras EFL1xxx (performance) e EFL2xxx (correção) estão previstas para marcos futuros.
+As regras EFL1xxx (performance) estão previstas para um marco futuro.
 
 O EfLint resolve os tipos do EF Core por símbolo. Se o EF Core não estiver referenciado, os
 analisadores não fazem nada.

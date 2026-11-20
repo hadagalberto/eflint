@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="EfLint.Tests" />
+    <InternalsVisibleTo Include="EfLint.CodeFixes" />
     <AdditionalFiles Include="../../AnalyzerReleases.Shipped.md" Link="AnalyzerReleases.Shipped.md" />
     <AdditionalFiles Include="../../AnalyzerReleases.Unshipped.md" Link="AnalyzerReleases.Unshipped.md" />
   </ItemGroup>

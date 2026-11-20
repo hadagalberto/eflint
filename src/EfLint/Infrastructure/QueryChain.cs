@@ -40,12 +40,12 @@ internal static class QueryChain
     /// <summary>True when the operation is a query rooted in a DbContext/DbSet.</summary>
     public static bool IsEfQuery(IOperation operation, EfSymbols symbols)
     {
-        if (!symbols.HasEntityFrameworkCore || !symbols.IsQueryableType(operation.Type))
+        var current = RawSqlHelpers.Unwrap(operation);
+        if (!symbols.HasEntityFrameworkCore || !symbols.IsQueryableType(current.Type))
         {
             return false;
         }
 
-        var current = RawSqlHelpers.Unwrap(operation);
         for (var depth = 0; depth < MaxChainDepth && current is not null; depth++)
         {
             if (IsQueryRoot(current, symbols))
@@ -148,6 +148,86 @@ internal static class QueryChain
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Walks a query chain down to the DbContext instance it originates from.
+    /// Returns null when the chain is not rooted in a DbContext.
+    /// </summary>
+    public static IOperation? FindContextRoot(IOperation operation, EfSymbols symbols)
+    {
+        var current = RawSqlHelpers.Unwrap(operation);
+        if (!symbols.HasEntityFrameworkCore || !symbols.IsQueryableType(current.Type))
+        {
+            return null;
+        }
+
+        for (var depth = 0; depth < MaxChainDepth && current is not null; depth++)
+        {
+            if (current is IMemberReferenceOperation member
+                && symbols.IsDbContextType(member.Instance?.Type)
+                && (symbols.IsDbSetType(member.Type) || symbols.IsQueryableType(member.Type)))
+            {
+                return RawSqlHelpers.Unwrap(member.Instance!);
+            }
+
+            if (current is IInvocationOperation invocation
+                && invocation.TargetMethod.Name == "Set"
+                && symbols.IsDbContextType(invocation.Instance?.Type))
+            {
+                return RawSqlHelpers.Unwrap(invocation.Instance!);
+            }
+
+            switch (current)
+            {
+                case IInvocationOperation currentInvocation:
+                    if (currentInvocation.Instance is not null)
+                    {
+                        current = RawSqlHelpers.Unwrap(currentInvocation.Instance);
+                        continue;
+                    }
+
+                    var source = currentInvocation.Arguments.FirstOrDefault(argument => symbols.IsQueryableType(argument.Parameter?.Type));
+                    if (source is null)
+                    {
+                        return null;
+                    }
+
+                    current = RawSqlHelpers.Unwrap(source.Value);
+                    continue;
+
+                case IMemberReferenceOperation currentMember:
+                    if (currentMember.Instance is null)
+                    {
+                        return null;
+                    }
+
+                    current = RawSqlHelpers.Unwrap(currentMember.Instance);
+                    continue;
+
+                case IConditionalOperation conditional:
+                    return conditional.WhenTrue is not null
+                        ? FindContextRoot(conditional.WhenTrue, symbols)
+                        : FindContextRoot(conditional.WhenFalse!, symbols);
+
+                default:
+                    return null;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>True when the invocation is a LINQ/EF query operator with the given name.</summary>
+    public static bool IsQueryOperatorNamed(IMethodSymbol method, EfSymbols symbols, string name)
+    {
+        return method.Name == name && IsQueryOperator(method, symbols);
+    }
+
+    /// <summary>True when the argument value is a lambda expression.</summary>
+    public static bool IsLambda(IArgumentOperation? argument)
+    {
+        return argument is not null && RawSqlHelpers.Unwrap(argument.Value) is IAnonymousFunctionOperation;
     }
 
     private static bool IsQueryRoot(IOperation operation, EfSymbols symbols)

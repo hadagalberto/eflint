@@ -20,6 +20,9 @@ internal static class RawSqlHelpers
                 case IParenthesizedOperation parenthesized:
                     current = parenthesized.Operand;
                     continue;
+                case IAwaitOperation awaitOperation:
+                    current = awaitOperation.Operation;
+                    continue;
                 default:
                     return current;
             }
